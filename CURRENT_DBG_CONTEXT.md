@@ -7,11 +7,10 @@
 ### Repo / Build State
 - Source-of-truth project path: `X:\backup\valentin\AI-Lab\projects\esp32_sonar_bridge`
 - Public repo: `https://github.com/valentindanev/esp32_sonar_bridge`
-- Current branch / commit at compaction prep: `main` at `57e7c2b` (`Lock sonar source selection to boot policy`)
-- Working tree is no longer clean after the latest documentation/session-handoff updates:
-  - `firmware/main/http_server.c`
-  - `CURRENT_DBG_CONTEXT.md`
-  - `HARDWIRED_SONAR_REFERENCE.md`
+- Current branch / commit at compaction prep: `main` at `aa117bc` (`Stabilize HTTP handling and document sonar reference`)
+- `donors/` has been removed from GitHub history and force-pushed out of the public repo.
+- `/donors/` is now explicitly ignored, so local donor references can remain on disk without being uploaded again.
+- Working tree still has untracked local probe logs, but donor reference content is now local-only.
 - Nested Git metadata from the donor history was preserved outside the repo before publishing:
   - `X:\backup\valentin\AI-Lab\projects\esp32_sonar_bridge_firmware_git_BACKUP_20260311`
   - `X:\backup\valentin\AI-Lab\projects\esp32_sonar_bridge_nested_git_BACKUP_20260311`
