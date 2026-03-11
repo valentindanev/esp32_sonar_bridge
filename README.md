@@ -51,6 +51,23 @@ This avoids mixing both sonar sources during the same boot and makes bench testi
   - trigger byte `0xFF`
   - frame format `FF Data_H Data_L SUM`
 
+## Flight Controller Wiring
+
+Current live bench-tested MAVLink UART settings:
+
+- ESP32 `GPIO12` -> FC `RX`
+- FC `TX` -> ESP32 `GPIO14`
+- ESP32 `GND` -> FC `GND`
+- `RTS = 0`, `CTS = 0`, so flow control is disabled
+- serial protocol = MAVLink
+- baud = `57600`
+
+Practical notes:
+
+- this FC link is separate from the hardwired sonar UART on `GPIO17` / `GPIO16`
+- if the FC `TX` line is `5V` TTL, level-shift it before the ESP32 `GPIO14` input
+- most flight controllers use `3.3V` UART, but verify before wiring
+
 ## Project Layout
 
 - `firmware/` - ESP-IDF firmware, Web UI, and build configuration

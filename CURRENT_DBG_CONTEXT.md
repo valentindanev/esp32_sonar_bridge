@@ -155,6 +155,12 @@
   - this has not broken the live Web UI path and is currently left as a documented upstream/framework-style quirk
 
 ### Hardware Notes For The Next Session
+- Current FC-link UART settings seen in live bench tests:
+  - ESP32 `GPIO12` = telemetry `TX` toward FC `RX`
+  - ESP32 `GPIO14` = telemetry `RX` from FC `TX`
+  - `RTS = 0`, `CTS = 0`, so flow control is disabled
+  - serial protocol = MAVLink
+  - baud = `57600`
 - Default hardwired sonar pins in firmware:
   - ESP TX to sonar RX/trigger: `GPIO17`
   - sonar TX/data to ESP RX: `GPIO16`
