@@ -7,8 +7,8 @@
 ### Repo / Build State
 - Source-of-truth project path: `X:\backup\valentin\AI-Lab\projects\esp32_sonar_bridge`
 - Public repo: `https://github.com/valentindanev/esp32_sonar_bridge`
-- Current public/local HEAD should include the save/reboot hardening work from `11-03-2026`, plus the final Deeper/AP credential restore fix after the next push.
-- Current working tree should only contain the final `main.c` Deeper/AP credential restore fix and the documentation/release updates needed to publish it.
+- Current public/local HEAD is `main` at `987f7ef` (`Restore AP settings after Deeper boot probe`).
+- Current working tree should be clean apart from ignored local-only archive/build content.
 - Local cleanup note:
   - root-level backups and probe/build logs are being archived under `archive/`
   - tracked next-step note lives in `FINISH_TODO.md`
@@ -23,6 +23,8 @@
 - Active hardware target: classic ESP32 on `COM13`
 - Latest local prerelease package prepared under:
   - `X:\backup\valentin\AI-Lab\projects\esp32_sonar_bridge\archive\releases\v0.1.0-beta2`
+- Latest public prerelease:
+  - `https://github.com/valentindanev/esp32_sonar_bridge/releases/tag/v0.1.0-beta2`
 - Flashing reminder: this board often needs manual download mode (`hold BOOT`, `tap RESET/EN`, keep holding `BOOT` for about `1-2s`)
 - Latest local step-1 build status:
   - `http_server.c` patched for HTTP stack usage reduction
