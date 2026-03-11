@@ -18,6 +18,10 @@
 #define DANEVI_DISTANCE_STALE_MS 3000
 #define DANEVI_DEBUG_MAX_LINES 8
 #define DANEVI_DEBUG_LINE_MAX 160
+#define DANEVI_FRAME_SIZE 4
+#define DANEVI_TRIGGER_BYTE 0xFF
+#define DANEVI_RESPONSE_TIMEOUT_MS 30
+#define DANEVI_TRIGGER_INTERVAL_MS 100
 
 static const char *TAG = "DANEVI_SONAR";
 
@@ -59,7 +63,27 @@ static void danevi_store_debug_line(const char *line) {
   xSemaphoreGive(g_debug_mutex);
 }
 
-static void danevi_log_valid_distance(const uint8_t *frame, int distance_mm) {
+static void danevi_format_frame_bytes(const uint8_t *frame, int length, char *dst,
+                                      size_t dst_size) {
+  if (dst == NULL || dst_size == 0) {
+    return;
+  }
+
+  dst[0] = '\0';
+  if (frame == NULL || length <= 0) {
+    snprintf(dst, dst_size, "<none>");
+    return;
+  }
+
+  for (int i = 0; i < length; i++) {
+    char byte_str[8];
+    snprintf(byte_str, sizeof(byte_str), i == 0 ? "%02X" : " %02X", frame[i]);
+    strncat(dst, byte_str, dst_size - strlen(dst) - 1);
+  }
+}
+
+static void danevi_log_valid_distance(const uint8_t *frame, int length,
+                                      int distance_mm) {
   TickType_t now = xTaskGetTickCount();
   int distance_delta = distance_mm - g_last_logged_distance_mm;
   if (distance_delta < 0) {
@@ -72,14 +96,13 @@ static void danevi_log_valid_distance(const uint8_t *frame, int distance_mm) {
     return;
   }
 
-  ESP_LOGI(TAG,
-           "Hardwired sonar frame: %02X %02X %02X %02X %02X -> %d mm",
-           frame[0], frame[1], frame[2], frame[3], frame[4], distance_mm);
+  char frame_bytes[DANEVI_DEBUG_LINE_MAX / 2];
+  danevi_format_frame_bytes(frame, length, frame_bytes, sizeof(frame_bytes));
+  ESP_LOGI(TAG, "Hardwired sonar frame len=%d bytes=%s -> %d mm", length,
+           frame_bytes, distance_mm);
   char debug_line[DANEVI_DEBUG_LINE_MAX];
-  snprintf(debug_line, sizeof(debug_line),
-           "[%lu ms] OK %02X %02X %02X %02X %02X -> %d mm",
-           (unsigned long)danevi_now_ms(), frame[0], frame[1], frame[2],
-           frame[3], frame[4], distance_mm);
+  snprintf(debug_line, sizeof(debug_line), "[%lu ms] OK len=%d bytes=%s -> %d mm",
+           (unsigned long)danevi_now_ms(), length, frame_bytes, distance_mm);
   danevi_store_debug_line(debug_line);
   g_last_logged_distance_mm = distance_mm;
   g_last_distance_log_tick = now;
@@ -92,20 +115,15 @@ static void danevi_log_frame_issue(const char *reason, const uint8_t *frame,
     return;
   }
 
-  uint8_t b0 = length > 0 ? frame[0] : 0;
-  uint8_t b1 = length > 1 ? frame[1] : 0;
-  uint8_t b2 = length > 2 ? frame[2] : 0;
-  uint8_t b3 = length > 3 ? frame[3] : 0;
-  uint8_t b4 = length > 4 ? frame[4] : 0;
+  char frame_bytes[DANEVI_DEBUG_LINE_MAX / 2];
+  danevi_format_frame_bytes(frame, length, frame_bytes, sizeof(frame_bytes));
 
-  ESP_LOGW(TAG,
-           "Hardwired sonar %s len=%d bytes=%02X %02X %02X %02X %02X",
-           reason, length, b0, b1, b2, b3, b4);
+  ESP_LOGW(TAG, "Hardwired sonar %s len=%d bytes=%s", reason, length,
+           frame_bytes);
   char debug_line[DANEVI_DEBUG_LINE_MAX];
   snprintf(debug_line, sizeof(debug_line),
-           "[%lu ms] ERR %s len=%d bytes=%02X %02X %02X %02X %02X",
-           (unsigned long)danevi_now_ms(), reason, length, b0, b1, b2, b3,
-           b4);
+           "[%lu ms] ERR %s len=%d bytes=%s",
+           (unsigned long)danevi_now_ms(), reason, length, frame_bytes);
   danevi_store_debug_line(debug_line);
   g_last_frame_issue_log_tick = now;
 }
@@ -210,7 +228,7 @@ void danevi_sonar_get_debug_log(char *dst, size_t dst_size) {
 
 static void danevi_sonar_task(void *arg) {
   uint8_t rx_buffer[BUF_SIZE];
-  uint8_t trigger_cmd = 0x55;
+  uint8_t trigger_cmd = DANEVI_TRIGGER_BYTE;
 
   ESP_LOGI(TAG, "Starting Hardwired Sonar Task on Core 1");
 
@@ -221,21 +239,20 @@ static void danevi_sonar_task(void *arg) {
     // Trigger ping
     uart_write_bytes(SONAR_UART_NUM, (const char *)&trigger_cmd, 1);
 
-    // Wait for response to arrive (max 100ms for 5 bytes at 115200)
-    int length =
-        uart_read_bytes(SONAR_UART_NUM, rx_buffer, 5, pdMS_TO_TICKS(100));
+    // Read the manufacturer-documented UART frame: FF Data_H Data_L SUM
+    int length = uart_read_bytes(SONAR_UART_NUM, rx_buffer, DANEVI_FRAME_SIZE,
+                                 pdMS_TO_TICKS(DANEVI_RESPONSE_TIMEOUT_MS));
 
-    if (length == 5 && rx_buffer[0] == 0xFF) {
-      uint8_t d1 = rx_buffer[1];
-      uint8_t d2 = rx_buffer[2];
-      uint8_t d3 = rx_buffer[3];
-      uint8_t chk = rx_buffer[4];
+    if (length == DANEVI_FRAME_SIZE && rx_buffer[0] == 0xFF) {
+      uint8_t data_h = rx_buffer[1];
+      uint8_t data_l = rx_buffer[2];
+      uint8_t chk = rx_buffer[3];
+      uint8_t sum = (uint8_t)((rx_buffer[0] + data_h + data_l) & 0xFF);
 
-      uint8_t sum = d1 + d2 + d3;
       if (sum == chk) {
-        int distance = (d1 << 8) + d2;
+        int distance = (data_h << 8) + data_l;
         danevi_sonar_set_distance(distance);
-        danevi_log_valid_distance(rx_buffer, distance);
+        danevi_log_valid_distance(rx_buffer, length, distance);
       } else {
         danevi_log_frame_issue("checksum mismatch", rx_buffer, length);
       }
@@ -246,8 +263,8 @@ static void danevi_sonar_task(void *arg) {
       danevi_log_no_response();
     }
 
-    // Delay before next ping (100ms ping rate = 10Hz)
-    vTaskDelay(pdMS_TO_TICKS(100));
+    // 100 ms is safely above the manufacturer minimum trigger interval.
+    vTaskDelay(pdMS_TO_TICKS(DANEVI_TRIGGER_INTERVAL_MS));
   }
 }
 

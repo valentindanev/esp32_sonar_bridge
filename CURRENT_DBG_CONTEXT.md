@@ -7,13 +7,21 @@
 ### Repo / Build State
 - Source-of-truth project path: `X:\backup\valentin\AI-Lab\projects\esp32_sonar_bridge`
 - Public repo: `https://github.com/valentindanev/esp32_sonar_bridge`
-- Current branch / commit at compaction prep: `main` at `aa117bc` (`Stabilize HTTP handling and document sonar reference`)
+- Current public/local HEAD before the latest uncommitted fixes: `main` at `ecb4b7c` (`Document donor history cleanup`)
+- Current working tree intentionally dirty with newer local fixes:
+  - `firmware/main/danevi_sonar.c`
+  - `firmware/main/db_timers.c`
+  - `CURRENT_DBG_CONTEXT.md`
+- Local cleanup note:
+  - root-level backups and probe/build logs are being archived under `archive/`
+  - tracked next-step note lives in `FINISH_TODO.md`
+  - `/archive/` is ignored by Git and is intended to stay local-only
 - `donors/` has been removed from GitHub history and force-pushed out of the public repo.
 - `/donors/` is now explicitly ignored, so local donor references can remain on disk without being uploaded again.
 - Working tree still has untracked local probe logs, but donor reference content is now local-only.
-- Nested Git metadata from the donor history was preserved outside the repo before publishing:
-  - `X:\backup\valentin\AI-Lab\projects\esp32_sonar_bridge_firmware_git_BACKUP_20260311`
-  - `X:\backup\valentin\AI-Lab\projects\esp32_sonar_bridge_nested_git_BACKUP_20260311`
+- Legacy Git-metadata backups from the donor/publish cleanup are now archived locally under:
+  - `X:\backup\valentin\AI-Lab\projects\esp32_sonar_bridge\archive\legacy_git_metadata_20260311\esp32_sonar_bridge_firmware_git_BACKUP_20260311`
+  - `X:\backup\valentin\AI-Lab\projects\esp32_sonar_bridge\archive\legacy_git_metadata_20260311\esp32_sonar_bridge_nested_git_BACKUP_20260311`
 - Reliable local build mirror: `C:\Users\valen\esp32_sonar_build`
 - Active hardware target: classic ESP32 on `COM13`
 - Flashing reminder: this board often needs manual download mode (`hold BOOT`, `tap RESET/EN`, keep holding `BOOT` for about `1-2s`)
@@ -21,6 +29,17 @@
   - `http_server.c` patched for HTTP stack usage reduction
   - build succeeded in `C:\Users\valen\esp32_sonar_build`
   - stack-fix build has now been flashed successfully to `COM13`
+
+### README Migration Notes
+- On `11-03-2026`, `README.md` was rewritten to be GitHub-facing instead of session-facing.
+- Detailed debug history, architecture rationale, and bench-test notes now belong here in `CURRENT_DBG_CONTEXT.md`.
+- Public README scope is now:
+  - project purpose
+  - current capabilities
+  - boot behavior
+  - hardware/build overview
+  - short status summary
+- Developer-only material such as probe logs, crash history, donor findings, and recovery notes should stay here or under `archive/`.
 
 ### What Was Completed In This Session
 - Created and published the project GitHub repo
@@ -34,6 +53,8 @@
 - Exposed `active_sonar_source` in `/api/system/stats`
 - Implemented Valentin's required boot policy in firmware and documented it in `README.md`
 - Built and flashed the boot-policy firmware successfully to `COM13`
+- Reworked sonar MAVLink publishing so the FreeRTOS timer callback only wakes a dedicated task instead of encoding and sending `DISTANCE_SENSOR` inside `Tmr Svc`
+- Built and flashed the dedicated-sonar-task firmware successfully to `COM13`
 
 ### Required Boot Policy Now Implemented
 1. On boot, if Deeper fallback is enabled, the ESP gets one `60 second` Deeper connection window.
@@ -44,6 +65,7 @@
 ### Latest Verified Runtime
 - Latest verified build size after the boot-policy work: `0x11dae0`
 - Latest flash to classic ESP32 on `COM13` succeeded on `11-03-2026`
+- Latest dedicated-sonar-task build size: `0x11dcb0`
 - Serial logs after the final flash confirmed the new one-shot Deeper boot window:
   - `Retry to connect to the AP (...) within boot window (60000 ms)`
   - `Timed out after 60000 ms while trying to connect to SSID: Deeper CHIRP+ 3B6D`
@@ -53,6 +75,12 @@
   - the AP comes back
   - the hardwired sonar task starts
   - Deeper retries stop until the next reboot
+- New post-fix verification log:
+  - `sonar_task_boot_probe_20260311_a.txt`
+  - shows `DB_TIMERS: Starting dedicated sonar MAVLink publish task.`
+  - shows repeated valid hardwired frames such as `FF 00 1A 19 -> 26 mm`
+  - shows repeated `Publishing hardwired sonar DISTANCE_SENSOR: 26 mm (2 cm)`
+  - did **not** reproduce `***ERROR*** A stack overflow in task Tmr Svc has been detected.` during sustained hardwired publishing
 - Important interpretation for future debugging:
   - if Deeper fallback is enabled and the sonar is not found, the AP disappearing for about the first `60 seconds` after boot is expected behavior now
   - this is not a reboot loop
@@ -69,7 +97,6 @@
   - key repro logs saved on disk:
     - `http_crash_probe_20260311.txt`
     - `http_crash_probe_live_20260311_b.txt`
-- Step 1 mitigation is now in source but not yet flashed:
 - Step 1 mitigation is now in source and flashed:
   - moved the two `1600` byte debug buffers in `system_stats_get_handler()` off the `httpd` task stack and onto the heap
   - increased the HTTP server task stack from the ESP-IDF default `4096` to `8192`
@@ -88,7 +115,8 @@
       - but `netsh` reported `The network specified by profile "DroneBridge for ESP32" is not available to connect.`
       - so step 1 exposed a new AP visibility/association problem that still needs separate investigation
 - Deeper still often fails to join during desk tests with `reason: 201` if the sonar is not fully awake / advertising in water mode.
-- Hardwired sonar live data is still not validated after the final boot-policy flash because the physical sensor wiring / water test has not been completed yet.
+- Hardwired sonar runtime is now bench-validated at the ESP level with real UART frames and live `DISTANCE_SENSOR` publishing.
+- Real flight-controller end-to-end validation for the hardwired path is still pending.
 - If no hardwired sensor is connected, repeated `DANEVI_SONAR: No hardwired sonar response within 100 ms` warnings are expected and not a firmware regression.
 - The frontend fetch noise (`signal is aborted without reason`) is still open. Likely cause: `frontend/dronebridge.js` creates an `AbortController` timeout in `get_json()` and never clears it after successful fetches, while `/api/system/stats` polling continues every `500 ms`.
 - The hardwired toggle is no longer an unconditional master switch. Current behavior is intentionally subordinate to the boot policy:
@@ -105,36 +133,34 @@
     - checksum should be `(0xFF + Data_H + Data_L) & 0xFF`
   - practical implication:
     - the current hardwired ESP32 parser is likely inheriting an Arduino-donor assumption that may be wrong for the real `GL041MT` / `GL042MT` sensor on the desk
-  - do not lose this:
-    - before the next hardwired flash/test, re-check `danevi_sonar.c` against `HARDWIRED_SONAR_REFERENCE.md`
+- The hardwired parser mismatch is now fixed in source and flashed:
+  - `danevi_sonar.c` now follows the manufacturer UART format:
+    - trigger `0xFF`
+    - `4` byte response `FF Data_H Data_L SUM`
+    - checksum `(0xFF + Data_H + Data_L) & 0xFF`
+  - the old `ERR misaligned frame len=4 ...` behavior is gone in current runtime logs
+- The earlier `Tmr Svc` stack overflow root cause is now addressed in source and flashed:
+  - `db_timers.c` moved sonar MAVLink encode/write/send work into a dedicated task with its own MAVLink status state and buffer
+  - the 10 Hz timer now only wakes that task
+  - latest runtime log shows the fix holding under real hardwired data
 
 ### Hardware Notes For The Next Session
 - Default hardwired sonar pins in firmware:
   - ESP TX to sonar RX/trigger: `GPIO17`
   - sonar TX/data to ESP RX: `GPIO16`
-- Current firmware still assumes:
-  - ESP sends `0x55`
-  - sonar answers with a `5-byte` frame
-- Newly collected seller documentation suggests the physical UART sensor more likely behaves as:
-  - trigger via simple UART data, with `0xFF` the strongest known candidate
-  - response frame `FF Data_H Data_L SUM` (`4` total bytes)
+- Current firmware now assumes the manufacturer-style UART protocol:
+  - ESP sends `0xFF`
+  - sonar answers with a `4-byte` frame `FF Data_H Data_L SUM`
+- Hardwired-sensor temperature support exists only through the short Modbus boot window and represents internal compensation temperature, not water temperature.
 - Voltage caution:
   - if the sonar TX line is `5V` TTL, level-shift it before feeding ESP32 `GPIO16`
 
 ### Recommended Next Steps
-1. Investigate the new AP visibility/association issue after fallback:
-   - serial says AP started
-   - Windows scan did not show `DroneBridge for ESP32`
-   - `netsh` connect failed with profile-not-available
-2. Revisit the AP IP inconsistency (`192.168.5.1` configured vs fallback log showing `192.168.4.1`) because it may be part of the same AP-side bug.
-3. After AP reliability is restored, re-run the HTTP/WebUI reproduction to confirm the `httpd` stack fix holds under real browser traffic.
-4. Update/review the hardwired parser logic first:
-   - likely change trigger byte
-   - likely change expected frame length from `5` to `4`
-   - likely change checksum formula to include the `0xFF` header
-5. Wire the hardwired sonar and validate the hardwired depth/debug panel plus MAVLink `DISTANCE_SENSOR` in AP fallback mode.
-6. Reboot again with the Deeper awake in water and confirm successful Deeper selection within the `60 second` window.
-7. After sonar-path validation, fix the frontend polling / abort noise in `frontend/dronebridge.js`.
+1. Fix the frontend polling / abort noise in `frontend/dronebridge.js`.
+2. Reconcile AP fallback / IP behavior so the configured AP IP and the runtime fallback IP are consistent.
+3. Run a longer soak test with the Web UI open and both sonar modes exercised.
+4. Validate end-to-end delivery to a real flight controller for both sonar sources.
+5. Re-test Deeper boot selection with the sonar awake in water after the cleanup items above.
 
 ## Earlier Session Notes
 - Date: 11-03-2026
@@ -175,7 +201,7 @@
   - they are primarily a MAVLink bridge that can join the sonar Wi-Fi as a station so the tablet can use one Wi-Fi network for both sonar and telemetry
   - this explains why the donor is widely used while still not solving the boat's required "Deeper depth to FC" use case by itself
 - A real `1.2.3` binary was obtained and tested:
-  - file: `X:\backup\valentin\AI-Lab\projects\esp32_sonar_bridge\mavesp-esp12e-1.2.3.bin`
+  - file: `X:\backup\valentin\AI-Lab\projects\esp32_sonar_bridge\archive\binary_references\mavesp-esp12e-1.2.3.bin`
   - flashed successfully to a D1 mini on `COM4`
   - confirmed binary identity:
     - AP SSID: `Mavesp.1.2.3`
@@ -489,3 +515,40 @@ The Deeper AP connection path is now working. The current remaining issue on the
 ### Conclusion
 - The first problem is fixed.
 - The second and third messages were downstream noise from the same client-abort path and are also eliminated by this patch.
+
+## Update 2026-03-11 17:00 - Hardwired Sonar Switched To Manufacturer UART Spec
+
+### Source change applied
+- `firmware/main/danevi_sonar.c` was patched away from the donor-style parser and toward the manufacturer-documented UART protocol.
+- Main changes:
+  - trigger byte changed from `0x55` to `0xFF`
+  - expected response frame changed from `5` bytes to `4` bytes
+  - checksum changed to include the header byte:
+    - `(0xFF + Data_H + Data_L) & 0xFF`
+  - distance decode kept as:
+    - `distance_mm = Data_H * 256 + Data_L`
+  - debug output now prints the actual received frame length and bytes more clearly
+- Backup created first:
+  - `X:\backup\valentin\AI-Lab\projects\esp32_sonar_bridge\backups\firmware\main\danevi_sonar_BACKUP_20260311_manufacturer_uart4.c`
+
+### Build / flash
+- Build succeeded in:
+  - `C:\Users\valen\esp32_sonar_build`
+- Flash succeeded to:
+  - `COM13`
+
+### Verification result
+- New logs:
+  - `X:\backup\valentin\AI-Lab\projects\esp32_sonar_bridge\hardwired_spec_boot_probe_20260311_a.txt`
+  - `X:\backup\valentin\AI-Lab\projects\esp32_sonar_bridge\hardwired_spec_runtime_probe_20260311_b.txt`
+- The previous `ERR misaligned frame len=4 ...` issue is gone.
+- The ESP now accepts and logs hardwired UART frames as valid:
+  - `DANEVI_SONAR: Hardwired sonar frame len=4 bytes=FF 00 00 FF -> 0 mm`
+- MAVLink timer now also publishes from the hardwired source using the parsed distance:
+  - `Publishing hardwired sonar DISTANCE_SENSOR: 0 mm (0 cm)`
+
+### Interpretation
+- The protocol mismatch was real and is now fixed.
+- The hardwired sonar path is now decoding the manufacturer frame format instead of rejecting valid packets.
+- In the latest no-water / shallow-air runtime capture, the sensor repeatedly reported `0 mm`, which is consistent with the valid frame `FF 00 00 FF`.
+- The earlier bucket captures showing frames like `FF 00 D5 D4` remain important evidence that, with the sensor in water, the parser should now be able to surface plausible depths around `209-214 mm`.

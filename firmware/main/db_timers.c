@@ -23,11 +23,23 @@
 #include "db_mavlink_msgs.h"
 #include "db_parameters.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/timers.h"
 #include "globals.h"
 #include <esp_wifi.h>
 
 
 #define TAG "DB_TIMERS"
+#define DB_MAVLINK_SONAR_TASK_STACK_SIZE 6144
+#define DB_MAVLINK_SONAR_TASK_PRIORITY 5
+
+static TaskHandle_t s_sonar_publish_task_handle = NULL;
+static TimerHandle_t s_sonar_timer_handle = NULL;
+static TickType_t s_last_sonar_log_tick = 0;
+static bool s_sonar_task_missing_logged = false;
+static uint8_t s_sonar_publish_buffer[296];
+static fmav_status_t s_sonar_mav_status = {0};
 
 static bool db_wifi_runtime_has_sta(void) {
   wifi_mode_t mode = WIFI_MODE_NULL;
@@ -210,78 +222,142 @@ void db_timer_start_mavlink_radio_status() {
 }
 
 /**
- * Timer callback to send a DISTANCE_SENSOR MAVLink message based on the active
- * sonar source.
- * @param pxTimer
+ * Returns the latest distance from whichever sonar source is active for the
+ * current boot policy.
  */
-void db_timer_mavlink_sonar_callback(TimerHandle_t pxTimer) {
-  if (DB_PARAM_SERIAL_PROTO != DB_SERIAL_PROTOCOL_MAVLINK) {
-    return; // Only inject in MAVLink mode
+static bool db_get_active_sonar_distance(int *distance_mm,
+                                         bool *use_deeper_sonar) {
+  if (distance_mm == NULL || use_deeper_sonar == NULL) {
+    return false;
   }
 
-  int distance_mm = -1;
-  bool have_distance = false;
+  *distance_mm = -1;
+  *use_deeper_sonar = false;
 
   switch (DB_ACTIVE_SONAR_SOURCE) {
   case DB_SONAR_SOURCE_DEEPER:
-    have_distance = deeper_udp_sonar_get_latest_distance(&distance_mm);
-    break;
+    *use_deeper_sonar = true;
+    return deeper_udp_sonar_get_latest_distance(distance_mm);
   case DB_SONAR_SOURCE_HARDWIRED:
-    have_distance = danevi_sonar_get_latest_distance(&distance_mm);
-    break;
+    return danevi_sonar_get_latest_distance(distance_mm);
   default:
+    return false;
+  }
+}
+
+/**
+ * Performs the actual DISTANCE_SENSOR encoding and transport work from a
+ * dedicated task so the FreeRTOS timer service task stays lightweight.
+ */
+static void db_publish_active_sonar_distance(void) {
+  if (DB_PARAM_SERIAL_PROTO != DB_SERIAL_PROTOCOL_MAVLINK) {
     return;
   }
 
-  if (have_distance && distance_mm >= 0) {
-    static uint8_t buff[296];
-    static TickType_t last_sonar_log_tick = 0;
-    bool use_deeper_sonar = DB_ACTIVE_SONAR_SOURCE == DB_SONAR_SOURCE_DEEPER;
-
-    fmav_distance_sensor_t payload = {0};
-    payload.time_boot_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
-    payload.min_distance = use_deeper_sonar ? 0 : 28;
-    payload.max_distance = use_deeper_sonar ? 10000 : 450;
-    payload.current_distance = distance_mm / 10; // Convert mm to cm
-    payload.type = 1; // MAV_DISTANCE_SENSOR_ULTRASOUND
-    payload.id = use_deeper_sonar ? 1 : 0;
-    payload.orientation = 25; // MAV_SENSOR_ROTATION_PITCH_270 (downward facing)
-    payload.covariance = 0;
-
-    uint16_t len = fmav_msg_distance_sensor_encode_to_frame_buf(
-        buff, db_get_mav_sys_id() == 0 ? 1 : db_get_mav_sys_id(),
-        191, // MAV_COMP_ID_GIMBAL or MAV_COMP_ID_PERIPHERAL
-        &payload, &fmav_status_serial);
-
-    // Send to Flight Controller (Serial) AND Ground Control Station (Radio)
-    write_to_serial(buff, len);
-    db_send_to_all_radio_clients(buff, len);
-
-    TickType_t now = xTaskGetTickCount();
-    if ((now - last_sonar_log_tick) >= pdMS_TO_TICKS(1000)) {
-      ESP_LOGI(TAG, "Publishing %s sonar DISTANCE_SENSOR: %d mm (%d cm)",
-               use_deeper_sonar ? "Deeper" : "hardwired", distance_mm,
-               payload.current_distance);
-      last_sonar_log_tick = now;
-    }
+  int distance_mm = -1;
+  bool use_deeper_sonar = false;
+  if (!db_get_active_sonar_distance(&distance_mm, &use_deeper_sonar) ||
+      distance_mm < 0) {
+    return;
   }
+
+  fmav_distance_sensor_t payload = {0};
+  payload.time_boot_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
+  payload.min_distance = use_deeper_sonar ? 0 : 28;
+  payload.max_distance = use_deeper_sonar ? 10000 : 450;
+  payload.current_distance = distance_mm / 10; // Convert mm to cm
+  payload.type = 1; // MAV_DISTANCE_SENSOR_ULTRASOUND
+  payload.id = use_deeper_sonar ? 1 : 0;
+  payload.orientation = 25; // MAV_SENSOR_ROTATION_PITCH_270 (downward facing)
+  payload.covariance = 0;
+
+  uint16_t len = fmav_msg_distance_sensor_encode_to_frame_buf(
+      s_sonar_publish_buffer, db_get_mav_sys_id() == 0 ? 1 : db_get_mav_sys_id(),
+      191, // MAV_COMP_ID_GIMBAL or MAV_COMP_ID_PERIPHERAL
+      &payload, &s_sonar_mav_status);
+
+  // Send to Flight Controller (Serial) AND Ground Control Station (Radio)
+  write_to_serial(s_sonar_publish_buffer, len);
+  db_send_to_all_radio_clients(s_sonar_publish_buffer, len);
+
+  TickType_t now = xTaskGetTickCount();
+  if ((now - s_last_sonar_log_tick) >= pdMS_TO_TICKS(1000)) {
+    ESP_LOGI(TAG, "Publishing %s sonar DISTANCE_SENSOR: %d mm (%d cm)",
+             use_deeper_sonar ? "Deeper" : "hardwired", distance_mm,
+             payload.current_distance);
+    s_last_sonar_log_tick = now;
+  }
+}
+
+/**
+ * Dedicated sonar publisher task. The timer only wakes this task so the work
+ * no longer runs inside the FreeRTOS timer service stack.
+ */
+static void db_mavlink_sonar_publish_task(void *arg) {
+  (void)arg;
+  ESP_LOGI(TAG, "Starting dedicated sonar MAVLink publish task.");
+  while (1) {
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    db_publish_active_sonar_distance();
+  }
+}
+
+/**
+ * Timer callback for sonar publishing. Keep this tiny: only wake the dedicated
+ * publish task instead of encoding and sending MAVLink inside Tmr Svc.
+ * @param pxTimer
+ */
+void db_timer_mavlink_sonar_callback(TimerHandle_t pxTimer) {
+  (void)pxTimer;
+  if (DB_PARAM_SERIAL_PROTO != DB_SERIAL_PROTOCOL_MAVLINK) {
+    return;
+  }
+
+  if (s_sonar_publish_task_handle == NULL) {
+    if (!s_sonar_task_missing_logged) {
+      ESP_LOGE(TAG,
+               "Sonar publish timer fired before the dedicated sonar task was "
+               "created.");
+      s_sonar_task_missing_logged = true;
+    }
+    return;
+  }
+
+  xTaskNotifyGive(s_sonar_publish_task_handle);
 }
 
 /**
  * Starts a periodic MAVLink distance sensor sending timer at 10Hz.
  */
 void db_timer_start_mavlink_sonar() {
-  static TimerHandle_t xSonarTimerHandle = NULL;
-  if (xSonarTimerHandle == NULL) {
-    xSonarTimerHandle =
+  if (s_sonar_publish_task_handle == NULL) {
+    BaseType_t task_created = xTaskCreate(
+        db_mavlink_sonar_publish_task, "db_mav_sonar",
+        DB_MAVLINK_SONAR_TASK_STACK_SIZE, NULL, DB_MAVLINK_SONAR_TASK_PRIORITY,
+        &s_sonar_publish_task_handle);
+    if (task_created != pdPASS) {
+      s_sonar_publish_task_handle = NULL;
+      ESP_LOGE(TAG, "Failed to create dedicated sonar publish task.");
+      return;
+    }
+    s_sonar_task_missing_logged = false;
+  }
+
+  if (s_sonar_timer_handle == NULL) {
+    s_sonar_timer_handle =
         xTimerCreate("MAV_Sonar_Timer",
                      pdMS_TO_TICKS(DB_TIMER_MAVLINK_SONAR_MS), // 100ms
                      pdTRUE, (void *)0, db_timer_mavlink_sonar_callback);
-    if (xSonarTimerHandle != NULL) {
-      ESP_LOGI(TAG, "Starting to send DISTANCE_SENSOR packets.");
-      xTimerStart(xSonarTimerHandle, 0);
-    } else {
+    if (s_sonar_timer_handle == NULL) {
       ESP_LOGE(TAG, "Failed to create Sonar Timer!");
+      return;
+    }
+  }
+
+  if (xTimerIsTimerActive(s_sonar_timer_handle) == pdFALSE) {
+    ESP_LOGI(TAG, "Starting to send DISTANCE_SENSOR packets.");
+    if (xTimerStart(s_sonar_timer_handle, 0) != pdPASS) {
+      ESP_LOGE(TAG, "Failed to start Sonar Timer!");
     }
   }
 }
