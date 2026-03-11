@@ -298,6 +298,14 @@
             </div>
 
             <h3 style="margin-top: 2rem">Hardwired & Deeper Sonar</h3>
+            <div class="row" id="ss_hardwired_en_div">
+                <div class="twelve columns">
+                    <div class="checkbox-wrapper-14">
+                        <input id="ss_hardwired_en" name="ss_hardwired_en" type="checkbox" class="switch" onchange="change_hardwired_visibility()">
+                        <label for="ss_hardwired_en">Enable Hardwired Sonar</label>
+                    </div>
+                </div>
+            </div>
             <div class="row" id="sonar_gpio_div">
                 <div class="six columns">
                     <label for="ss_tx_pin">Hardwired Sonar TX GPIO</label>
@@ -389,6 +397,7 @@
     setTimeout(change_msp_ltm_visibility, 500)
     setTimeout(change_ap_ip_visibility, 500)
     setTimeout(change_uart_visibility, 500)
+    setTimeout(change_hardwired_visibility, 500)
     setTimeout(change_deeper_visibility, 500)
 </script>
 </body>

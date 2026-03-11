@@ -24,6 +24,12 @@
 #include <esp_wifi_types.h>
 #include "db_esp32_control.h"
 
+typedef enum {
+  DB_SONAR_SOURCE_NONE = 0,
+  DB_SONAR_SOURCE_HARDWIRED = 1,
+  DB_SONAR_SOURCE_DEEPER = 2,
+} db_sonar_source_t;
+
 extern char CURRENT_CLIENT_IP[IP4ADDR_STRLEN_MAX];  // IP address of the ESP32 when we are in client mode connected
 
 extern uint8_t DB_RADIO_IS_OFF;
@@ -31,6 +37,7 @@ extern db_esp_signal_quality_t db_esp_signal_quality;   // used on AIR/station s
 extern wifi_sta_list_t wifi_sta_list;      // updated when ESP32 is in ap mode. Contains RSSI of every connected station
 extern uint8_t LOCAL_MAC_ADDRESS[6];       // filled with the mac address during init of WiFi interface
 extern uint8_t DB_MAV_SYS_ID;              // stores the local system ID - set by heartbeat that is received via UART (UART is the local connection)
+extern db_sonar_source_t DB_ACTIVE_SONAR_SOURCE;
 
 extern uint32_t serial_total_byte_count;                // Total bytes read from serial link (UART or USB/JTAG)
 extern uint32_t serial_total_decoded_mav_msgs;          // Total decoded MAVLink messages from serial link (UART or USB/JTAG)

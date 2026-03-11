@@ -76,6 +76,7 @@
 #endif
 
 static const char *TAG = "DB_ESP32";
+static const uint32_t DB_DEEPER_BOOT_CONNECT_WINDOW_MS = 60000;
 
 char CURRENT_CLIENT_IP[IP4ADDR_STRLEN_MAX] = "192.168.2.1";
 uint8_t DB_RADIO_IS_OFF = false; // keep track if we switched Wi-Fi/BLE off
@@ -86,12 +87,16 @@ db_esp_signal_quality_t db_esp_signal_quality = {.air_rssi = UINT8_MAX,
                                                  .gnd_noise_floor = UINT8_MAX};
 wifi_sta_list_t wifi_sta_list = {.num = 0};
 uint8_t LOCAL_MAC_ADDRESS[6];
+db_sonar_source_t DB_ACTIVE_SONAR_SOURCE = DB_SONAR_SOURCE_NONE;
 
 // Wi-Fi client mode vars
 static int s_retry_num = 0;
 static EventGroupHandle_t s_wifi_event_group;
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT BIT1
+static TickType_t s_sta_retry_deadline_tick = 0;
+static uint32_t s_sta_retry_window_ms = 0;
+static bool s_sta_retry_uses_deadline = false;
 
 esp_netif_t *esp_default_netif;
 static esp_event_handler_instance_t s_wifi_any_id_handler;
@@ -114,6 +119,29 @@ static bool db_wifi_runtime_has_sta(void) {
   wifi_mode_t mode = WIFI_MODE_NULL;
   return esp_wifi_get_mode(&mode) == ESP_OK &&
          (mode == WIFI_MODE_STA || mode == WIFI_MODE_APSTA);
+}
+
+static void db_reset_sta_retry_window(void) {
+  s_sta_retry_deadline_tick = 0;
+  s_sta_retry_window_ms = 0;
+  s_sta_retry_uses_deadline = false;
+}
+
+static void db_configure_sta_retry_window(uint32_t timeout_ms) {
+  if (timeout_ms > 0) {
+    s_sta_retry_deadline_tick = xTaskGetTickCount() + pdMS_TO_TICKS(timeout_ms);
+    s_sta_retry_window_ms = timeout_ms;
+    s_sta_retry_uses_deadline = true;
+  } else {
+    db_reset_sta_retry_window();
+  }
+}
+
+static bool db_sta_retry_window_expired(void) {
+  if (!s_sta_retry_uses_deadline) {
+    return false;
+  }
+  return (int32_t)(xTaskGetTickCount() - s_sta_retry_deadline_tick) >= 0;
 }
 
 static esp_err_t db_set_dns_server(esp_netif_t *netif, uint32_t addr,
@@ -190,6 +218,7 @@ static void db_cleanup_wifi_runtime(void) {
   }
 
   s_retry_num = 0;
+  db_reset_sta_retry_window();
 }
 
 /**
@@ -303,7 +332,20 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
              event->reason);
     // Keep on trying
     if (!DB_RADIO_IS_OFF) {
-      if (s_retry_num < 15) {
+      if (s_sta_retry_uses_deadline) {
+        if (!db_sta_retry_window_expired()) {
+          ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_connect());
+          s_retry_num++;
+          ESP_LOGI(TAG,
+                   "Retry to connect to the AP (%i) within boot window (%lu ms)",
+                   s_retry_num, (unsigned long)s_sta_retry_window_ms);
+        } else {
+          ESP_LOGW(TAG, "STA connect window expired after %lu ms. Triggering "
+                        "fall-back!",
+                   (unsigned long)s_sta_retry_window_ms);
+          xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
+        }
+      } else if (s_retry_num < 15) {
         ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_connect());
         s_retry_num++;
         ESP_LOGI(TAG, "Retry to connect to the AP (%i)", s_retry_num);
@@ -320,6 +362,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
     ESP_LOGI(TAG, "IP_EVENT_STA_GOT_IP:" IPSTR, IP2STR(&event->ip_info.ip));
     sprintf(CURRENT_CLIENT_IP, IPSTR, IP2STR(&event->ip_info.ip));
     s_retry_num = 0;
+    db_reset_sta_retry_window();
     xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
   }
 }
@@ -487,9 +530,10 @@ void db_init_wifi_apmode(int wifi_mode) {
  * Initializes the ESP Wi-fi client/station mode where we connect to a known
  * access point.
  */
-int db_init_wifi_clientmode() {
+int db_init_wifi_clientmode(uint32_t connect_window_ms) {
   db_cleanup_wifi_runtime();
   s_wifi_event_group = xEventGroupCreate();
+  db_configure_sta_retry_window(connect_window_ms);
   ESP_ERROR_CHECK(esp_netif_init());
   ESP_ERROR_CHECK(esp_event_loop_create_default());
   esp_default_netif = esp_netif_create_default_wifi_sta();
@@ -585,7 +629,10 @@ int db_init_wifi_clientmode() {
    * bits are set by event_handler() (see above) */
   EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group,
                                          WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
-                                         pdFALSE, pdFALSE, portMAX_DELAY);
+                                         pdFALSE, pdFALSE,
+                                         connect_window_ms > 0
+                                             ? pdMS_TO_TICKS(connect_window_ms)
+                                             : portMAX_DELAY);
 
   /* xEventGroupWaitBits() returns the bits before the call returned, hence we
    * can test which event actually happened. */
@@ -598,7 +645,13 @@ int db_init_wifi_clientmode() {
              DB_PARAM_WIFI_SSID, db_wifi_password_for_log());
     enable_temp_ap_mode = true;
   } else {
-    ESP_LOGE(TAG, "UNEXPECTED WIFI EVENT");
+    if (connect_window_ms > 0) {
+      ESP_LOGW(TAG, "Timed out after %lu ms while trying to connect to SSID:%s",
+               (unsigned long)connect_window_ms, DB_PARAM_WIFI_SSID);
+      enable_temp_ap_mode = true;
+    } else {
+      ESP_LOGE(TAG, "UNEXPECTED WIFI EVENT");
+    }
   }
   if (enable_temp_ap_mode) {
     ESP_LOGW(TAG, "WiFi client mode was not able to connect to the specified "
@@ -897,6 +950,7 @@ void db_configure_antenna() {
  */
 void app_main() {
   bool deeper_sta_connected = false;
+  bool hardwired_sonar_selected = false;
 
   db_param_init_parameters();
   udp_conn_list =
@@ -913,9 +967,7 @@ void app_main() {
       DB_PARAM_RADIO_MODE; // must always match, mismatch only allowed when
                            // changed by user action and not rebooted, yet.
   db_configure_antenna();
-
-  // Initialize hardwired sonar task on Core 1
-  danevi_sonar_init(DB_PARAM_SONAR_TX_GPIO, DB_PARAM_SONAR_RX_GPIO);
+  DB_ACTIVE_SONAR_SOURCE = DB_SONAR_SOURCE_NONE;
 
   switch (DB_PARAM_RADIO_MODE) {
   case DB_WIFI_MODE_AP:
@@ -927,14 +979,15 @@ void app_main() {
                    DB_PARAM_WIFI_SSID);
       db_copy_cstr(original_wifi_pass, sizeof(original_wifi_pass),
                    DB_PARAM_PASS);
-      ESP_LOGI(TAG, "Deeper Sonar Fallback Enabled. Temporarily switching to "
-                    "STA to scan for Deeper AP...");
+      ESP_LOGI(TAG, "Deeper Sonar Fallback Enabled. Attempting a single %lu ms "
+                    "boot-time STA connection window before AP fallback...",
+               (unsigned long)DB_DEEPER_BOOT_CONNECT_WINDOW_MS);
       db_copy_cstr(DB_PARAM_WIFI_SSID, db_param_ssid.value.db_param_str.max_len,
                    DB_PARAM_DEEPER_SSID);
       db_copy_cstr(DB_PARAM_PASS, db_param_pass.value.db_param_str.max_len,
                    DB_PARAM_DEEPER_PASS);
 
-      if (db_init_wifi_clientmode() < 0) {
+      if (db_init_wifi_clientmode(DB_DEEPER_BOOT_CONNECT_WINDOW_MS) < 0) {
         ESP_LOGE(TAG, "STA Mode failed (Deeper not found). Falling back to "
                       "normal AP Mode.");
 
@@ -947,21 +1000,34 @@ void app_main() {
                      original_wifi_pass);
 
         db_init_wifi_apmode(DB_PARAM_RADIO_MODE);
+        hardwired_sonar_selected = true;
+        DB_ACTIVE_SONAR_SOURCE = DB_SONAR_SOURCE_HARDWIRED;
+        ESP_LOGI(TAG, "Deeper boot probe failed. Staying in AP mode and using "
+                      "hardwired sonar until the next reboot.");
       } else {
         ESP_LOGI(TAG, "Deeper Fallback SUCCESS! We are now connected to the "
                       "Deeper Sonar AP.");
         deeper_sta_connected = true;
+        DB_ACTIVE_SONAR_SOURCE = DB_SONAR_SOURCE_DEEPER;
         // Keep DB_PARAM_RADIO_MODE technically as AP so the WebUI doesn't
         // permanently change to STA
       }
     } else {
       db_init_wifi_apmode(DB_PARAM_RADIO_MODE);
+      hardwired_sonar_selected = DB_PARAM_HARDWIRED_EN;
+      DB_ACTIVE_SONAR_SOURCE = hardwired_sonar_selected
+                                   ? DB_SONAR_SOURCE_HARDWIRED
+                                   : DB_SONAR_SOURCE_NONE;
     }
     break;
   case DB_WIFI_MODE_ESPNOW_AIR:
   case DB_WIFI_MODE_ESPNOW_GND:
     db_init_wifi_espnow();
     db_start_espnow_module();
+    hardwired_sonar_selected = DB_PARAM_HARDWIRED_EN;
+    DB_ACTIVE_SONAR_SOURCE = hardwired_sonar_selected
+                                 ? DB_SONAR_SOURCE_HARDWIRED
+                                 : DB_SONAR_SOURCE_NONE;
     break;
   case DB_BLUETOOTH_MODE:
 #ifdef CONFIG_BT_ENABLED
@@ -969,24 +1035,50 @@ void app_main() {
         DB_WIFI_MODE_AP); // WiFi & BLE co-existence to enable webinterface
     db_ble_queue_init();
     db_ble_init();
+    hardwired_sonar_selected = DB_PARAM_HARDWIRED_EN;
+    DB_ACTIVE_SONAR_SOURCE = hardwired_sonar_selected
+                                 ? DB_SONAR_SOURCE_HARDWIRED
+                                 : DB_SONAR_SOURCE_NONE;
 #else
     DB_RADIO_MODE_DESIGNATED = DB_WIFI_MODE_AP;
     DB_PARAM_RADIO_MODE = DB_WIFI_MODE_AP;
     ESP_LOGE(TAG, "Bluetooth is not enabled with this build. Please enable it "
                   "in menuconfig and re-compile. Switching to AP mode.");
     db_init_wifi_apmode(DB_WIFI_MODE_AP);
+    hardwired_sonar_selected = DB_PARAM_HARDWIRED_EN;
+    DB_ACTIVE_SONAR_SOURCE = hardwired_sonar_selected
+                                 ? DB_SONAR_SOURCE_HARDWIRED
+                                 : DB_SONAR_SOURCE_NONE;
 #endif
     break;
   default:
     // Wi-Fi client mode with LR mode enabled
-    if (db_init_wifi_clientmode() < 0) {
+    if (db_init_wifi_clientmode(0) < 0) {
       ESP_LOGE(TAG, "Failed to init Wifi Client Mode");
       ESP_LOGI(TAG, "Falling back to AP mode");
       db_init_wifi_apmode(DB_WIFI_MODE_AP);
+      hardwired_sonar_selected = DB_PARAM_HARDWIRED_EN;
+      DB_ACTIVE_SONAR_SOURCE = hardwired_sonar_selected
+                                   ? DB_SONAR_SOURCE_HARDWIRED
+                                   : DB_SONAR_SOURCE_NONE;
     } else if (db_is_deeper_sta_target()) {
       deeper_sta_connected = true;
+      DB_ACTIVE_SONAR_SOURCE = DB_SONAR_SOURCE_DEEPER;
+    } else {
+      hardwired_sonar_selected = DB_PARAM_HARDWIRED_EN;
+      DB_ACTIVE_SONAR_SOURCE = hardwired_sonar_selected
+                                   ? DB_SONAR_SOURCE_HARDWIRED
+                                   : DB_SONAR_SOURCE_NONE;
     }
     break;
+  }
+
+  if (hardwired_sonar_selected) {
+    danevi_sonar_init(DB_PARAM_SONAR_TX_GPIO, DB_PARAM_SONAR_RX_GPIO);
+  } else if (DB_ACTIVE_SONAR_SOURCE == DB_SONAR_SOURCE_DEEPER) {
+    ESP_LOGI(TAG, "Deeper selected at boot. Hardwired sonar stays off.");
+  } else {
+    ESP_LOGI(TAG, "No hardwired sonar source selected for this boot.");
   }
 
   if (DB_PARAM_RADIO_MODE != DB_WIFI_MODE_ESPNOW_AIR &&

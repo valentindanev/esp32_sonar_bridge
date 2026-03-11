@@ -2,6 +2,52 @@
 
 ## Latest Session Update
 - Date: 11-03-2026
+- Compaction snapshot for this session:
+  - public GitHub repo created: `https://github.com/valentindanev/esp32_sonar_bridge`
+  - earlier nested Git metadata was preserved outside the project before publishing:
+    - `X:\backup\valentin\AI-Lab\projects\esp32_sonar_bridge_firmware_git_BACKUP_20260311`
+    - `X:\backup\valentin\AI-Lab\projects\esp32_sonar_bridge_nested_git_BACKUP_20260311`
+- Source/UI work completed in this session:
+  - Deeper readout boxes made smaller
+  - GPS coordinates added to Deeper stats and frontend
+  - hardwired depth/debug API and frontend panel added
+  - `Enable Hardwired Sonar` toggle added
+  - active sonar source now exposed in `/api/system/stats`
+- Required boot policy from Valentin is now implemented in source, documented in `README.md`, built, and flashed successfully to `COM13`:
+  1. On boot, if Deeper fallback is enabled, try Deeper exactly once for `60 seconds`
+  2. If Deeper connects in that window: keep hardwired sonar off and use Deeper only for MAVLink `DISTANCE_SENSOR` until next reboot
+  3. If Deeper does not connect in that window: fall back to AP mode once, stop trying Deeper until next reboot, start hardwired sonar, and use hardwired only for MAVLink `DISTANCE_SENSOR`
+  4. Sonar source selection is fixed for the current boot
+- Latest verified build/flash:
+  - local build path: `C:\Users\valen\esp32_sonar_build`
+  - latest app size: `0x11dae0`
+  - flash to classic ESP32 on `COM13` succeeded on `11-03-2026`
+- Latest verified runtime after the new boot-policy flash:
+  - repeated logs now explicitly say `Retry to connect to the AP (...) within boot window (60000 ms)`
+  - after `60000 ms` the ESP logs:
+    - `Timed out after 60000 ms while trying to connect to SSID: Deeper CHIRP+ 3B6D`
+    - `STA Mode failed (Deeper not found). Falling back to normal AP Mode.`
+    - `Deeper boot probe failed. Staying in AP mode and using hardwired sonar until the next reboot.`
+  - after that fallback the AP starts on `192.168.4.1`
+  - after that fallback the hardwired sonar task starts and no more Deeper retries occur until reboot
+- Important current interpretation:
+  - the AP disappearing for roughly the first `60 seconds` after boot is now expected whenever Deeper fallback is enabled and the ESP is still inside the single boot-time Deeper probe window
+  - this is not a reboot loop
+- Current known open items:
+  - Deeper still often fails to join during desk boots with `reason: 201` when the sonar is not definitely awake/advertising in water mode
+  - hardwired sonar live data is still unverified because the physical sensor was not yet wired/tested after the new boot-policy flash
+  - when no hardwired sensor is connected, repeated `DANEVI_SONAR: No hardwired sonar response within 100 ms` warnings are expected
+  - the frontend fetch noise (`signal is aborted without reason`) was analyzed earlier and is likely caused by overlapping polling plus an uncleared `AbortController` timeout in `frontend/dronebridge.js`; this is not fixed yet
+  - hardwired toggle semantics are now subordinate to the required boot policy:
+    - if Deeper boot probe succeeds, hardwired stays off for that boot
+    - if Deeper boot probe fails, hardwired is intentionally started for that boot even if the saved hardwired toggle is off
+- Recommended next live steps:
+  1. Reboot with Deeper absent and wait more than `60 seconds`; confirm the AP returns and stays stable
+  2. Wire the hardwired sonar and validate depth/debug plus MAVLink `DISTANCE_SENSOR` in the AP fallback path
+  3. Reboot with Deeper awake in water and confirm successful Deeper selection within the `60 second` window
+
+## Earlier Session Notes
+- Date: 11-03-2026
 - ESP32 implementation milestone completed and validated live on `COM13`:
   - dedicated Deeper UDP task now binds local UDP `10110`
   - sends `"$DEEP230,1*38\r\n"` to `192.168.10.1:10110`

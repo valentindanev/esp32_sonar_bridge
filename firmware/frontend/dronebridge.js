@@ -9,6 +9,7 @@ let esp_chip_model = 0;		// according to get_esp_chip_model_str()
 let recv_ser_bytes = 0;		// Total bytes received from serial interface
 let serial_dec_mav_msgs = 0;	// Total MAVLink messages decoded from serial interface
 let set_telem_proto = null;		// Telemetry protocol received by the ESP32
+let active_sonar_source = 0;	// 0 none, 1 hardwired, 2 deeper
 
 function change_radio_dis_arm_visibility() {
 	// we only support this feature when MAVLink or LTM are set AND when a standard Wi-Fi mode or BLE is enabled
@@ -127,6 +128,26 @@ function change_deeper_visibility() {
 		pass_div.style.display = "none";
 		summary_div.style.display = "none";
 		debug_div.style.display = "none";
+	}
+}
+
+function change_hardwired_visibility() {
+	let hardwired_en = document.getElementById("ss_hardwired_en").checked;
+	let hardwired_active = active_sonar_source === 1;
+	let deeper_active = active_sonar_source === 2;
+	let gpio_div = document.getElementById("sonar_gpio_div");
+	let summary_div = document.getElementById("ss_hardwired_summary_div");
+	let debug_div = document.getElementById("ss_hardwired_debug_div");
+	if (!deeper_active && (hardwired_en || hardwired_active)) {
+		gpio_div.style.display = "block";
+		summary_div.style.display = "block";
+		debug_div.style.display = "block";
+	} else {
+		gpio_div.style.display = "none";
+		summary_div.style.display = "none";
+		debug_div.style.display = "none";
+		document.getElementById("ss_hardwired_depth").innerHTML = "Hardwired sonar disabled";
+		document.getElementById("ss_hardwired_debug").value = "Hardwired sonar disabled.";
 	}
 }
 
@@ -277,6 +298,7 @@ function update_conn_status() {
 		setTimeout(change_msp_ltm_visibility, 500);
 		setTimeout(change_ap_ip_visibility, 500);
 		setTimeout(change_uart_visibility, 500);
+		setTimeout(change_hardwired_visibility, 500);
 		setTimeout(change_deeper_visibility, 500);
 	}
 	old_conn_status = conn_status
@@ -357,6 +379,10 @@ function get_stats() {
 		if ('hardwired_debug' in json_data) {
 			document.getElementById("ss_hardwired_debug").value = json_data["hardwired_debug"];
 		}
+		if ('active_sonar_source' in json_data) {
+			active_sonar_source = parseInt(json_data["active_sonar_source"]);
+		}
+		change_hardwired_visibility();
 		update_hardwired_readouts(json_data);
 		update_deeper_readouts(json_data);
 
@@ -367,6 +393,11 @@ function get_stats() {
 }
 
 function update_hardwired_readouts(json_data) {
+	if (!document.getElementById("ss_hardwired_en").checked && active_sonar_source !== 1) {
+		document.getElementById("ss_hardwired_depth").innerHTML = "Hardwired sonar disabled";
+		return;
+	}
+
 	let depth_mm = parseInt(json_data["hardwired_depth_mm"]);
 	let sample_age_ms = parseInt(json_data["hardwired_sample_age_ms"]);
 
@@ -442,6 +473,7 @@ function get_settings() {
 			}
 		}
 		set_telem_proto = document.getElementById("proto").value;
+		change_hardwired_visibility();
 	}).catch(error => {
 		conn_status = 0
 		error.message;
@@ -450,6 +482,7 @@ function get_settings() {
 	});
 	change_ap_ip_visibility();
 	change_msp_ltm_visibility();
+	change_hardwired_visibility();
 	change_deeper_visibility();
 	return 0;
 }

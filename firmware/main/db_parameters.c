@@ -394,13 +394,29 @@ db_parameter_t db_param_rssi_dbm = {.db_name = "rep_rssi_dbm",
                                                   .max = true,
                                               }}};
 
+db_parameter_t db_param_hardwired_en = {.db_name = "ss_hardwired_en",
+                                        .type = UINT8,
+                                        .mav_t =
+                                            {
+                                                .param_name = "SS_HARD_EN",
+                                                .param_index = 17,
+                                                .param_type =
+                                                    MAV_PARAM_TYPE_UINT8,
+                                            },
+                                        .value = {.db_param_u8 = {
+                                                      .value = 1,
+                                                      .default_value = 1,
+                                                      .min = 0,
+                                                      .max = 1,
+                                                  }}};
+
 db_parameter_t db_param_sonar_tx_gpio = {
     .db_name = "ss_tx_pin",
     .type = UINT8,
     .mav_t =
         {
             .param_name = "SS_TX_PIN",
-            .param_index = 17,
+            .param_index = 18,
             .param_type = MAV_PARAM_TYPE_UINT8,
         },
     .value = {.db_param_u8 = {
@@ -416,7 +432,7 @@ db_parameter_t db_param_sonar_rx_gpio = {
     .mav_t =
         {
             .param_name = "SS_RX_PIN",
-            .param_index = 18,
+            .param_index = 19,
             .param_type = MAV_PARAM_TYPE_UINT8,
         },
     .value = {.db_param_u8 = {
@@ -431,7 +447,7 @@ db_parameter_t db_param_deeper_en = {.db_name = "ss_deeper_en",
                                      .mav_t =
                                          {
                                              .param_name = "SS_DEEPER_EN",
-                                             .param_index = 19,
+                                             .param_index = 20,
                                              .param_type = MAV_PARAM_TYPE_UINT8,
                                          },
                                      .value = {.db_param_u8 = {
@@ -572,6 +588,7 @@ void db_param_init_parameters() {
                                    &db_param_dis_radio_armed,
                                    &db_param_udp_client_port,
                                    &db_param_rssi_dbm,
+                                   &db_param_hardwired_en,
                                    &db_param_sonar_tx_gpio,
                                    &db_param_sonar_rx_gpio,
                                    &db_param_deeper_en,

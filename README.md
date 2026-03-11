@@ -2,7 +2,15 @@
 
 **Status**: In Development  
 **Hardware**: ESP32 (replacing ESP8266 and Arduino Nano)  
-**Stack**: C++ (Arduino IDE / PlatformIO)  
+**Stack**: C / ESP-IDF / CMake
+
+## Required Boot Behavior
+*Updated on March 11, 2026*
+
+- On every boot, when Deeper fallback is enabled, the ESP32 gets exactly one boot-time Deeper connection window of `60 seconds`.
+- If the Deeper connects within that window, the ESP32 stays on the Deeper link for that boot, keeps the hardwired sonar off, and sources MAVLink `DISTANCE_SENSOR` only from the Deeper.
+- If the Deeper does not connect within that window, the ESP32 falls back to DroneBridge AP mode, stops trying to connect to the Deeper until the next reboot, turns on the hardwired sonar, and sources MAVLink `DISTANCE_SENSOR` only from the hardwired sonar.
+- Sonar source selection is fixed for the current boot. The next reboot is what reevaluates whether Deeper or hardwired should be active.
 
 ## Latest Debug Status
 *Updated on March 11, 2026*
@@ -109,10 +117,10 @@ We are using the [DroneBridge ESP32](https://github.com/DroneBridge/ESP32) proje
 
 #### 1. The Boot-Time State Machine (The mavesp8266 Donor Logic)
 To prevent the ESP32's single 2.4GHz WiFi radio from bogging down by running as an Access Point (AP) and a Station (STA) simultaneously, we use a Boot-Time State Machine copied from a community-modified `mavesp8266` build.
-- **Scan Phase (0-15 Seconds)**: The ESP32 scans for a specific WiFi SSID (e.g., `Deeper CHIRP+`).
-- **Branch A (Lake Mapping Mode)**: If found, the ESP32 connects to it as a Station (`STA`), reads the Deeper TCP/UDP stream, translates the depth to MAVLink, and injects it into the DroneBridge MAVLink proxy loop.
+- **Scan Phase (0-60 Seconds)**: The ESP32 performs one Deeper-only boot-time connection window for a specific WiFi SSID (e.g., `Deeper CHIRP+`).
+- **Branch A (Lake Mapping Mode)**: If found, the ESP32 connects to it as a Station (`STA`), keeps the hardwired sonar off for that boot, reads the Deeper TCP/UDP stream, translates the depth to MAVLink, and injects it into the DroneBridge MAVLink proxy loop.
   - Note: Our specific Deeper SSID is `Deeper CHIRP+ 3B6D`.
-- **Branch B (Normal Bridge Mode)**: If 15 seconds pass and the Deeper is *not* found, it abandons the connection, spins up the default DroneBridge Access Point (`AP`), and reads solely from the Hardwired Sonar.
+- **Branch B (Normal Bridge Mode)**: If 60 seconds pass and the Deeper is *not* found, it abandons the connection, spins up the default DroneBridge Access Point (`AP`), reads solely from the Hardwired Sonar, and does not retry the Deeper again until the next reboot.
 
 #### 2. Dual-Core Distribution
 - **Core 0**: Handles the native DroneBridge networking (WiFi AP/STA connections, TCP/UDP clients, WebUI).

@@ -379,6 +379,7 @@ static esp_err_t system_stats_get_handler(httpd_req_t *req) {
     cJSON_AddNumberToObject(root, "serial_dec_mav_msgs", serial_total_decoded_mav_msgs);
     cJSON_AddNumberToObject(root, "tcp_connected", num_connected_tcp_clients);
     cJSON_AddNumberToObject(root, "udp_connected", udp_conn_list->size);
+    cJSON_AddNumberToObject(root, "active_sonar_source", DB_ACTIVE_SONAR_SOURCE);
     cJSON_AddStringToObject(root, "hardwired_debug", hardwired_debug_log);
     cJSON_AddNumberToObject(root, "hardwired_depth_mm",
                             hardwired_snapshot.has_distance

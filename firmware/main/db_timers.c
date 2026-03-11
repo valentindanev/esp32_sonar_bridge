@@ -220,11 +220,23 @@ void db_timer_mavlink_sonar_callback(TimerHandle_t pxTimer) {
   }
 
   int distance_mm = -1;
-  bool use_deeper_sonar = deeper_udp_sonar_get_latest_distance(&distance_mm);
-  if ((use_deeper_sonar || danevi_sonar_get_latest_distance(&distance_mm)) &&
-      distance_mm >= 0) {
+  bool have_distance = false;
+
+  switch (DB_ACTIVE_SONAR_SOURCE) {
+  case DB_SONAR_SOURCE_DEEPER:
+    have_distance = deeper_udp_sonar_get_latest_distance(&distance_mm);
+    break;
+  case DB_SONAR_SOURCE_HARDWIRED:
+    have_distance = danevi_sonar_get_latest_distance(&distance_mm);
+    break;
+  default:
+    return;
+  }
+
+  if (have_distance && distance_mm >= 0) {
     static uint8_t buff[296];
     static TickType_t last_sonar_log_tick = 0;
+    bool use_deeper_sonar = DB_ACTIVE_SONAR_SOURCE == DB_SONAR_SOURCE_DEEPER;
 
     fmav_distance_sensor_t payload = {0};
     payload.time_boot_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
