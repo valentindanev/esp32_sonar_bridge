@@ -93,7 +93,7 @@ On Windows, a fully local build path is more reliable than building directly fro
 
 ## Current Status
 
-Bench validation completed:
+Bench and live FC-link validation completed:
 
 - all four bench mode combinations were exercised:
   - both sonars off
@@ -102,6 +102,8 @@ Bench validation completed:
   - both enabled, with Deeper winning when it connects during boot
 - hardwired UART frames are parsed and converted to MAVLink `DISTANCE_SENSOR`
 - Deeper UDP/NMEA data is parsed and converted to MAVLink `DISTANCE_SENSOR`
+- Mission Planner / FC rangefinder validation is now confirmed for both sonar sources
+- with Deeper active, the top Wi-Fi settings remain `DroneBridge for ESP32` / `dronebridge`
 - saved AP credentials now remain stable in the Web UI even after a successful Deeper boot session
 - Web UI sonar panels and debug views are live
 - the earlier `httpd` and `Tmr Svc` stack overflows were fixed
@@ -111,7 +113,6 @@ Still open:
 - longer soak/stability validation
 - frontend polling / abort cleanup
 - shutdown-time Deeper STA reconnect noise during intentional reboot
-- real flight-controller end-to-end validation for both sonar sources
 
 Known non-blocking quirk:
 

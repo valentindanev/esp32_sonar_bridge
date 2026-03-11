@@ -121,6 +121,11 @@
     - `Deeper Sonar SSID = Deeper CHIRP+ 3B6D`
     - open password placeholder
   - this remains true even after a successful Deeper boot session with both sonar options enabled
+- Live FC/GCS rangefinder validation is now confirmed on the real vehicle wiring:
+  - ESP Web UI, Mission Planner, and the mobile app all showed matching hardwired depth on the same bench run
+  - Mission Planner exposed the active feed as `rangefinder1`
+  - with both sonar options enabled, Deeper-only publishing was confirmed after a successful Deeper boot connect
+  - latest Deeper FC validation showed `Depth = 0.82 m` in the ESP Web UI and `rangefinder1 = 82` in Mission Planner on the same run
 - Remaining shutdown noise during a successful save/reboot:
   - low-level ESP-IDF log line `wifi:NAN WiFi stop`
   - this appears to be framework noise during Wi-Fi teardown, not a project-level fault
@@ -135,7 +140,6 @@
   - this is shutdown-time reconnect noise, not a reboot failure
 - Deeper still often fails to join during desk tests with `reason: 201` if the sonar is not fully awake / advertising in water mode.
 - Longer soak validation is still pending.
-- Real flight-controller end-to-end validation for both sonar sources is still pending.
 - If no hardwired sensor is connected, repeated `DANEVI_SONAR: No hardwired sonar response within 100 ms` warnings are expected and not a firmware regression.
 - The hardwired toggle is no longer an unconditional master switch. Current behavior is intentionally subordinate to the boot policy:
   - if the Deeper boot probe succeeds, hardwired stays off for that boot
