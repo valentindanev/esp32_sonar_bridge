@@ -88,8 +88,8 @@ textarea.debug-window {
 }
 
 .deeper-coordinates {
-    font-size: 1rem;
-    line-height: 1.2;
+    font-size: inherit;
+    line-height: inherit;
     word-break: break-word;
 }
 
