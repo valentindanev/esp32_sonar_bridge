@@ -7,7 +7,7 @@
 ### Repo / Build State
 - Source-of-truth project path: `X:\backup\valentin\AI-Lab\projects\esp32_sonar_bridge`
 - Public repo: `https://github.com/valentindanev/esp32_sonar_bridge`
-- Current public/local HEAD is `main` at `987f7ef` (`Restore AP settings after Deeper boot probe`).
+- Current public/local HEAD includes the final Deeper/AP credential restore fix, the refreshed bench-validation notes, and the published `v0.1.0-beta2` prerelease follow-up docs.
 - Current working tree should be clean apart from ignored local-only archive/build content.
 - Local cleanup note:
   - root-level backups and probe/build logs are being archived under `archive/`
