@@ -49,6 +49,8 @@
 
 #define FILE_PATH_MAX (ESP_VFS_PATH_MAX + 128)
 #define SCRATCH_BUFSIZE (10240)
+#define DB_HTTP_DEBUG_LOG_BUFFER_SIZE (1600)
+#define DB_HTTP_SERVER_STACK_SIZE (8192)
 
 typedef struct rest_server_context {
     char base_path[ESP_VFS_PATH_MAX + 1];
@@ -140,12 +142,8 @@ static esp_err_t rest_common_get_handler(httpd_req_t *req) {
             /* Send the buffer contents as HTTP response chunk */
             if (httpd_resp_send_chunk(req, chunk, read_bytes) != ESP_OK) {
                 close(fd);
-                ESP_LOGE(TAG, "File sending failed!");
-                /* Abort sending file */
-                httpd_resp_sendstr_chunk(req, NULL);
-                /* Respond with 500 Internal Server Error */
-                httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to send file");
-                return ESP_FAIL;
+                ESP_LOGW(TAG, "Client disconnected while sending file: %s", filepath);
+                return ESP_OK;
             }
         }
     } while (read_bytes > 0);
@@ -367,13 +365,24 @@ static esp_err_t system_stats_get_handler(httpd_req_t *req) {
     cJSON *root = cJSON_CreateObject();
     bool runtime_sta = db_http_runtime_has_sta();
     bool runtime_ap = db_http_runtime_has_ap();
-    char hardwired_debug_log[1600];
     danevi_sonar_snapshot_t hardwired_snapshot = {0};
-    char deeper_debug_log[1600];
     deeper_udp_snapshot_t deeper_snapshot = {0};
-    danevi_sonar_get_debug_log(hardwired_debug_log, sizeof(hardwired_debug_log));
+    char *hardwired_debug_log = calloc(1, DB_HTTP_DEBUG_LOG_BUFFER_SIZE);
+    char *deeper_debug_log = calloc(1, DB_HTTP_DEBUG_LOG_BUFFER_SIZE);
+
+    if (root == NULL || hardwired_debug_log == NULL || deeper_debug_log == NULL) {
+        free(hardwired_debug_log);
+        free(deeper_debug_log);
+        cJSON_Delete(root);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "out of memory");
+        return ESP_FAIL;
+    }
+
+    danevi_sonar_get_debug_log(hardwired_debug_log,
+                               DB_HTTP_DEBUG_LOG_BUFFER_SIZE);
     danevi_sonar_get_snapshot(&hardwired_snapshot);
-    db_get_deeper_debug_log(deeper_debug_log, sizeof(deeper_debug_log));
+    db_get_deeper_debug_log(deeper_debug_log, DB_HTTP_DEBUG_LOG_BUFFER_SIZE);
     deeper_udp_sonar_get_snapshot(&deeper_snapshot);
     cJSON_AddNumberToObject(root, "read_bytes", serial_total_byte_count);
     cJSON_AddNumberToObject(root, "serial_dec_mav_msgs", serial_total_decoded_mav_msgs);
@@ -449,6 +458,8 @@ static esp_err_t system_stats_get_handler(httpd_req_t *req) {
     const char *sys_info = cJSON_Print(root);
     db_http_resp_sendstr_with_retry(req, sys_info);
     free((void *) sys_info);
+    free(hardwired_debug_log);
+    free(deeper_debug_log);
     cJSON_Delete(root);
     return ESP_OK;
 }
@@ -510,6 +521,7 @@ esp_err_t start_rest_server(const char *base_path) {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.uri_match_fn = httpd_uri_match_wildcard;
     config.max_uri_handlers = 9;
+    config.stack_size = DB_HTTP_SERVER_STACK_SIZE;
 
     ESP_LOGI(TAG, "Starting HTTP Server");
     REST_CHECK(httpd_start(&server, &config) == ESP_OK, "Start server failed", err_start);

@@ -1,4 +1,6 @@
 *_BACKUP_*
+/backups/
+/donors/
 build_log*.txt
 *.bin
 *.elf

@@ -2,49 +2,140 @@
 
 ## Latest Session Update
 - Date: 11-03-2026
-- Compaction snapshot for this session:
-  - public GitHub repo created: `https://github.com/valentindanev/esp32_sonar_bridge`
-  - earlier nested Git metadata was preserved outside the project before publishing:
-    - `X:\backup\valentin\AI-Lab\projects\esp32_sonar_bridge_firmware_git_BACKUP_20260311`
-    - `X:\backup\valentin\AI-Lab\projects\esp32_sonar_bridge_nested_git_BACKUP_20260311`
-- Source/UI work completed in this session:
-  - Deeper readout boxes made smaller
-  - GPS coordinates added to Deeper stats and frontend
-  - hardwired depth/debug API and frontend panel added
-  - `Enable Hardwired Sonar` toggle added
-  - active sonar source now exposed in `/api/system/stats`
-- Required boot policy from Valentin is now implemented in source, documented in `README.md`, built, and flashed successfully to `COM13`:
-  1. On boot, if Deeper fallback is enabled, try Deeper exactly once for `60 seconds`
-  2. If Deeper connects in that window: keep hardwired sonar off and use Deeper only for MAVLink `DISTANCE_SENSOR` until next reboot
-  3. If Deeper does not connect in that window: fall back to AP mode once, stop trying Deeper until next reboot, start hardwired sonar, and use hardwired only for MAVLink `DISTANCE_SENSOR`
-  4. Sonar source selection is fixed for the current boot
-- Latest verified build/flash:
-  - local build path: `C:\Users\valen\esp32_sonar_build`
-  - latest app size: `0x11dae0`
-  - flash to classic ESP32 on `COM13` succeeded on `11-03-2026`
-- Latest verified runtime after the new boot-policy flash:
-  - repeated logs now explicitly say `Retry to connect to the AP (...) within boot window (60000 ms)`
-  - after `60000 ms` the ESP logs:
-    - `Timed out after 60000 ms while trying to connect to SSID: Deeper CHIRP+ 3B6D`
-    - `STA Mode failed (Deeper not found). Falling back to normal AP Mode.`
-    - `Deeper boot probe failed. Staying in AP mode and using hardwired sonar until the next reboot.`
-  - after that fallback the AP starts on `192.168.4.1`
-  - after that fallback the hardwired sonar task starts and no more Deeper retries occur until reboot
-- Important current interpretation:
-  - the AP disappearing for roughly the first `60 seconds` after boot is now expected whenever Deeper fallback is enabled and the ESP is still inside the single boot-time Deeper probe window
+- This file is the compaction handoff for the current session. The older detailed notes below are still useful, but the bullets in this section are the fastest way to resume work.
+
+### Repo / Build State
+- Source-of-truth project path: `X:\backup\valentin\AI-Lab\projects\esp32_sonar_bridge`
+- Public repo: `https://github.com/valentindanev/esp32_sonar_bridge`
+- Current branch / commit at compaction prep: `main` at `57e7c2b` (`Lock sonar source selection to boot policy`)
+- Working tree is no longer clean after the latest documentation/session-handoff updates:
+  - `firmware/main/http_server.c`
+  - `CURRENT_DBG_CONTEXT.md`
+  - `HARDWIRED_SONAR_REFERENCE.md`
+- Nested Git metadata from the donor history was preserved outside the repo before publishing:
+  - `X:\backup\valentin\AI-Lab\projects\esp32_sonar_bridge_firmware_git_BACKUP_20260311`
+  - `X:\backup\valentin\AI-Lab\projects\esp32_sonar_bridge_nested_git_BACKUP_20260311`
+- Reliable local build mirror: `C:\Users\valen\esp32_sonar_build`
+- Active hardware target: classic ESP32 on `COM13`
+- Flashing reminder: this board often needs manual download mode (`hold BOOT`, `tap RESET/EN`, keep holding `BOOT` for about `1-2s`)
+- Latest local step-1 build status:
+  - `http_server.c` patched for HTTP stack usage reduction
+  - build succeeded in `C:\Users\valen\esp32_sonar_build`
+  - stack-fix build has now been flashed successfully to `COM13`
+
+### What Was Completed In This Session
+- Created and published the project GitHub repo
+- Added Deeper frontend improvements:
+  - smaller Deeper readout boxes
+  - GPS coordinates field
+- Added hardwired-sonar observability:
+  - hardwired depth readout
+  - hardwired debug panel
+  - `Enable Hardwired Sonar` setting and UI switch
+- Exposed `active_sonar_source` in `/api/system/stats`
+- Implemented Valentin's required boot policy in firmware and documented it in `README.md`
+- Built and flashed the boot-policy firmware successfully to `COM13`
+
+### Required Boot Policy Now Implemented
+1. On boot, if Deeper fallback is enabled, the ESP gets one `60 second` Deeper connection window.
+2. If Deeper connects in that window, the hardwired sonar stays off for that boot and MAVLink `DISTANCE_SENSOR` comes only from Deeper.
+3. If Deeper does not connect in that window, the ESP falls back once to AP mode, stops trying Deeper until the next reboot, starts the hardwired sonar, and MAVLink `DISTANCE_SENSOR` comes only from the hardwired sonar.
+4. Sonar source selection is fixed for the current boot.
+
+### Latest Verified Runtime
+- Latest verified build size after the boot-policy work: `0x11dae0`
+- Latest flash to classic ESP32 on `COM13` succeeded on `11-03-2026`
+- Serial logs after the final flash confirmed the new one-shot Deeper boot window:
+  - `Retry to connect to the AP (...) within boot window (60000 ms)`
+  - `Timed out after 60000 ms while trying to connect to SSID: Deeper CHIRP+ 3B6D`
+  - `STA Mode failed (Deeper not found). Falling back to normal AP Mode.`
+  - `Deeper boot probe failed. Staying in AP mode and using hardwired sonar until the next reboot.`
+- After that timeout/fallback:
+  - the AP comes back
+  - the hardwired sonar task starts
+  - Deeper retries stop until the next reboot
+- Important interpretation for future debugging:
+  - if Deeper fallback is enabled and the sonar is not found, the AP disappearing for about the first `60 seconds` after boot is expected behavior now
   - this is not a reboot loop
-- Current known open items:
-  - Deeper still often fails to join during desk boots with `reason: 201` when the sonar is not definitely awake/advertising in water mode
-  - hardwired sonar live data is still unverified because the physical sensor was not yet wired/tested after the new boot-policy flash
-  - when no hardwired sensor is connected, repeated `DANEVI_SONAR: No hardwired sonar response within 100 ms` warnings are expected
-  - the frontend fetch noise (`signal is aborted without reason`) was analyzed earlier and is likely caused by overlapping polling plus an uncleared `AbortController` timeout in `frontend/dronebridge.js`; this is not fixed yet
-  - hardwired toggle semantics are now subordinate to the required boot policy:
-    - if Deeper boot probe succeeds, hardwired stays off for that boot
-    - if Deeper boot probe fails, hardwired is intentionally started for that boot even if the saved hardwired toggle is off
-- Recommended next live steps:
-  1. Reboot with Deeper absent and wait more than `60 seconds`; confirm the AP returns and stays stable
-  2. Wire the hardwired sonar and validate depth/debug plus MAVLink `DISTANCE_SENSOR` in the AP fallback path
-  3. Reboot with Deeper awake in water and confirm successful Deeper selection within the `60 second` window
+
+### Current Known Open Items
+- New confirmed root cause from live AP + serial reproduction:
+  - the ESP is not just "disconnecting" when the WebUI is opened
+  - the board crashes with `***ERROR*** A stack overflow in task httpd has been detected.`
+  - the serial log then shows `rst:0xc (SW_CPU_RESET)`
+  - this was reproduced while:
+    - staying on the AP long enough for Deeper fallback to finish
+    - joining the AP from Windows
+    - letting the HTTP/captive-portal probing start
+  - key repro logs saved on disk:
+    - `http_crash_probe_20260311.txt`
+    - `http_crash_probe_live_20260311_b.txt`
+- Step 1 mitigation is now in source but not yet flashed:
+- Step 1 mitigation is now in source and flashed:
+  - moved the two `1600` byte debug buffers in `system_stats_get_handler()` off the `httpd` task stack and onto the heap
+  - increased the HTTP server task stack from the ESP-IDF default `4096` to `8192`
+  - file changed:
+    - `firmware/main/http_server.c`
+  - mapped-drive backup created before edit:
+    - `firmware/main/http_server_BACKUP_20260311_httpstackfix.c`
+  - build/flash result:
+    - new app SHA in boot log: `ac2fd3c83aaab168...`
+    - new combined repro log after flash: `http_crash_probe_live_20260311_c_after_fix.txt`
+  - important current interpretation:
+    - in the post-flash serial reproduction, the earlier `***ERROR*** A stack overflow in task httpd has been detected.` message did **not** recur
+    - the previous confirmed `httpd` crash appears fixed
+    - however, the automated Windows reconnect test then hit a separate issue:
+      - after fallback, serial logs report `WIFI_EVENT_AP_START`
+      - but `netsh` reported `The network specified by profile "DroneBridge for ESP32" is not available to connect.`
+      - so step 1 exposed a new AP visibility/association problem that still needs separate investigation
+- Deeper still often fails to join during desk tests with `reason: 201` if the sonar is not fully awake / advertising in water mode.
+- Hardwired sonar live data is still not validated after the final boot-policy flash because the physical sensor wiring / water test has not been completed yet.
+- If no hardwired sensor is connected, repeated `DANEVI_SONAR: No hardwired sonar response within 100 ms` warnings are expected and not a firmware regression.
+- The frontend fetch noise (`signal is aborted without reason`) is still open. Likely cause: `frontend/dronebridge.js` creates an `AbortController` timeout in `get_json()` and never clears it after successful fetches, while `/api/system/stats` polling continues every `500 ms`.
+- The hardwired toggle is no longer an unconditional master switch. Current behavior is intentionally subordinate to the boot policy:
+  - if the Deeper boot probe succeeds, hardwired stays off for that boot
+  - if the Deeper boot probe fails, hardwired is started for that boot even if the saved hardwired toggle is off
+- New hardwired-sonar finding from donor review:
+  - `donors/arduino_sonar.ino` and the current `firmware/main/danevi_sonar.c` follow the same pattern:
+    - trigger byte `0x55`
+    - expect `5` total bytes
+    - checksum excludes the `0xFF` header
+  - the newly collected seller documentation for the physical UART sensor points to a different protocol:
+    - trigger can be any serial data, with `0xFF` strongly indicated by the vendor tool
+    - response is `4` total bytes: `FF Data_H Data_L SUM`
+    - checksum should be `(0xFF + Data_H + Data_L) & 0xFF`
+  - practical implication:
+    - the current hardwired ESP32 parser is likely inheriting an Arduino-donor assumption that may be wrong for the real `GL041MT` / `GL042MT` sensor on the desk
+  - do not lose this:
+    - before the next hardwired flash/test, re-check `danevi_sonar.c` against `HARDWIRED_SONAR_REFERENCE.md`
+
+### Hardware Notes For The Next Session
+- Default hardwired sonar pins in firmware:
+  - ESP TX to sonar RX/trigger: `GPIO17`
+  - sonar TX/data to ESP RX: `GPIO16`
+- Current firmware still assumes:
+  - ESP sends `0x55`
+  - sonar answers with a `5-byte` frame
+- Newly collected seller documentation suggests the physical UART sensor more likely behaves as:
+  - trigger via simple UART data, with `0xFF` the strongest known candidate
+  - response frame `FF Data_H Data_L SUM` (`4` total bytes)
+- Voltage caution:
+  - if the sonar TX line is `5V` TTL, level-shift it before feeding ESP32 `GPIO16`
+
+### Recommended Next Steps
+1. Investigate the new AP visibility/association issue after fallback:
+   - serial says AP started
+   - Windows scan did not show `DroneBridge for ESP32`
+   - `netsh` connect failed with profile-not-available
+2. Revisit the AP IP inconsistency (`192.168.5.1` configured vs fallback log showing `192.168.4.1`) because it may be part of the same AP-side bug.
+3. After AP reliability is restored, re-run the HTTP/WebUI reproduction to confirm the `httpd` stack fix holds under real browser traffic.
+4. Update/review the hardwired parser logic first:
+   - likely change trigger byte
+   - likely change expected frame length from `5` to `4`
+   - likely change checksum formula to include the `0xFF` header
+5. Wire the hardwired sonar and validate the hardwired depth/debug panel plus MAVLink `DISTANCE_SENSOR` in AP fallback mode.
+6. Reboot again with the Deeper awake in water and confirm successful Deeper selection within the `60 second` window.
+7. After sonar-path validation, fix the frontend polling / abort noise in `frontend/dronebridge.js`.
 
 ## Earlier Session Notes
 - Date: 11-03-2026
@@ -296,3 +387,106 @@ The Deeper AP connection path is now working. The current remaining issue on the
 2. If Deeper connects again, watch for the new TCP/UDP packet-preview logs to identify its traffic path and payload format.
 3. Verify whether the previous `ESP_ERR_WIFI_MODE` warning is truly resolved during a successful STA session.
 4. Check the hardwired sonar wiring / activity if no `DANEVI_SONAR` frame logs appear during a debug window.
+
+---
+
+## Update 2026-03-11 16:30 - AP Stability Re-Test After HTTP Stack Fix
+
+### Live Test Setup
+- Host connected successfully to `DroneBridge for ESP32`.
+- ESP serial console was available again on `COM13`.
+- New combined capture log:
+  - `X:\backup\valentin\AI-Lab\projects\esp32_sonar_bridge\http_ping_probe_20260311_h_live_connected.txt`
+
+### Verified Result
+- The AP stayed connected and stable during:
+  - `60` pings to `192.168.5.1`
+  - manual `GET /`
+  - manual `GET /api/system/info`
+  - manual `GET /api/settings`
+  - manual `GET /api/system/stats`
+  - another `20` pings after the HTTP requests
+- Ping results:
+  - first window: `60 sent / 60 received / 0 lost`
+  - second window: `20 sent / 20 received / 0 lost`
+- No reboot, no panic, no `Guru Meditation`, and no `httpd` stack overflow appeared in serial.
+
+### Important Conclusion
+- The previous fatal web-triggered crash (`***ERROR*** A stack overflow in task httpd has been detected.`) appears fixed by the latest `http_server.c` patch.
+- The ESP can now survive page/API traffic without dropping off Wi-Fi.
+
+### Remaining Web Issue
+- During `GET /`, serial still logs:
+  - `httpd_sock_err: error in send : 104`
+  - `DB_HTTP_REST: File sending failed!`
+  - `500 Internal Server Error - Failed to send file`
+  - `httpd_uri: uri handler execution failed`
+- Despite those messages:
+  - the client still got HTTP `200` on `/` in the live repro
+  - API endpoints all returned HTTP `200`
+  - Wi-Fi stayed up
+- So the next HTTP issue is now narrowed to root-page/static-file sending behavior, not AP stability or task-stack overflow.
+
+### Hardwired Sonar Note From Same Log
+- Repeated warnings continue:
+  - `DANEVI_SONAR: Hardwired sonar misaligned frame len=4 bytes=FF 00 00 FF 00`
+- This reinforces the earlier conclusion that the current hardwired parser/trigger assumptions likely still do not match the real UART sonar protocol.
+
+## Update 2026-03-11 16:35 - Root Page Send Failure Triage
+
+### What was verified
+- The earlier `GET /` repro that logged:
+  - `DB_HTTP_REST: File sending failed!`
+  - `500 Internal Server Error - Failed to send file`
+  - `httpd_uri: uri handler execution failed`
+  was caused by the test client reading only the first `512` bytes of `/` and then closing the socket.
+- `firmware/frontend/index.html` is much larger than that:
+  - file size on disk: `22463` bytes
+- A full-body retest was run with serial active:
+  - log file:
+    - `X:\backup\valentin\AI-Lab\projects\esp32_sonar_bridge\http_root_fullread_probe_20260311_a.txt`
+- In that full-body test:
+  - client received HTTP `200`
+  - client read `54016` bytes
+  - serial logged `DB_HTTP_REST: File sending complete`
+  - no `File sending failed!`
+  - no `500 Internal Server Error - Failed to send file`
+  - no `httpd_uri: uri handler execution failed`
+
+### Interpretation
+- The three log lines above are one cascade caused by an early client disconnect while the server is still chunking the file.
+- This is not the same issue as the earlier fatal `httpd` stack overflow.
+
+### Source change now prepared
+- `firmware/main/http_server.c` was patched so the static-file handler no longer escalates a broken client socket into a fake HTTP `500` on the server side.
+- New behavior on chunk-send failure:
+  - close the file
+  - log a warning:
+    - `Client disconnected while sending file: ...`
+  - stop handling the request cleanly
+- This should suppress the misleading `500` and `uri handler execution failed` noise for client-abort cases.
+
+### Build / Flash state
+- The patch builds successfully in:
+  - `C:\Users\valen\esp32_sonar_build`
+- The patch has now been flashed successfully to `COM13`.
+
+### Post-flash verification
+- New repro log:
+  - `X:\backup\valentin\AI-Lab\projects\esp32_sonar_bridge\http_root_partialread_probe_20260311_c_after_patch_ap_visible.txt`
+- Re-tested the exact early-disconnect case:
+  - client connected to `DroneBridge for ESP32`
+  - client requested `/`
+  - client intentionally read only `512` bytes and closed early
+- New serial behavior:
+  - `httpd_sock_err: error in send : 104`
+  - `DB_HTTP_REST: Client disconnected while sending file: /www/index.html`
+  - `httpd_sock_err: error in recv : 104`
+- The old misleading chain is gone:
+  - no `DB_HTTP_REST: File sending failed!`
+  - no `500 Internal Server Error - Failed to send file`
+  - no `httpd_uri: uri handler execution failed`
+
+### Conclusion
+- The first problem is fixed.
+- The second and third messages were downstream noise from the same client-abort path and are also eliminated by this patch.
