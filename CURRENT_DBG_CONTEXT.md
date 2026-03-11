@@ -7,11 +7,8 @@
 ### Repo / Build State
 - Source-of-truth project path: `X:\backup\valentin\AI-Lab\projects\esp32_sonar_bridge`
 - Public repo: `https://github.com/valentindanev/esp32_sonar_bridge`
-- Current public/local HEAD before the latest uncommitted fixes: `main` at `ecb4b7c` (`Document donor history cleanup`)
-- Current working tree intentionally dirty with newer local fixes:
-  - `firmware/main/danevi_sonar.c`
-  - `firmware/main/db_timers.c`
-  - `CURRENT_DBG_CONTEXT.md`
+- Current public/local HEAD before the latest uncommitted fixes: `main` at `0761aee` (`Normalize GPS readout font size`)
+- Current working tree is expected to be clean after committing the latest save/reboot and logging fixes from this session.
 - Local cleanup note:
   - root-level backups and probe/build logs are being archived under `archive/`
   - tracked next-step note lives in `FINISH_TODO.md`
@@ -29,6 +26,14 @@
   - `http_server.c` patched for HTTP stack usage reduction
   - build succeeded in `C:\Users\valen\esp32_sonar_build`
   - stack-fix build has now been flashed successfully to `COM13`
+- Latest flashed local fixes:
+  - `http_server.c` POST receive loops were corrected to read `total_len - cur_len` instead of `total_len` on every iteration
+  - the GPS coordinates font-size fix is now included on the live device
+  - `db_param_print_values_to_buffer()` was hardened to be bounded by caller-supplied buffer size instead of using unbounded `strcat()`
+  - parameter dump buffers in `main.c` are now heap-backed via `calloc()` instead of using large local stack arrays
+  - AP station-list refresh during shutdown is now guarded to suppress the old `ESP_ERR_WIFI_STOP_STATE` noise on intentional reboot
+  - latest build succeeded in `C:\Users\valen\esp32_sonar_build`
+  - latest flash to `COM13` succeeded after the heap-backed logging and Wi-Fi shutdown-guard changes
 
 ### README Migration Notes
 - On `11-03-2026`, `README.md` was rewritten to be GitHub-facing instead of session-facing.
@@ -81,6 +86,15 @@
   - shows repeated valid hardwired frames such as `FF 00 1A 19 -> 26 mm`
   - shows repeated `Publishing hardwired sonar DISTANCE_SENSOR: 26 mm (2 cm)`
   - did **not** reproduce `***ERROR*** A stack overflow in task Tmr Svc has been detected.` during sustained hardwired publishing
+- Save/reboot pipeline is now verified on the live device:
+  - with both sonars disabled, `Save Settings & Reboot` now completes a normal NVS save and intentional reboot
+  - no `Guru Meditation`
+  - no heap assert in `cJSON_Delete`
+  - no `main` task stack overflow
+  - no app-level `ESP_ERR_WIFI_STOP_STATE` warning during the AP shutdown that precedes reboot
+- Remaining shutdown noise during a successful save/reboot:
+  - low-level ESP-IDF log line `wifi:NAN WiFi stop`
+  - this appears to be framework noise during Wi-Fi teardown, not a project-level fault
 - Important interpretation for future debugging:
   - if Deeper fallback is enabled and the sonar is not found, the AP disappearing for about the first `60 seconds` after boot is expected behavior now
   - this is not a reboot loop

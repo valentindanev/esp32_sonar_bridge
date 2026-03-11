@@ -172,7 +172,7 @@ static esp_err_t settings_post_handler(httpd_req_t *req) {
         return ESP_FAIL;
     }
     while (cur_len < total_len) {
-        received = httpd_req_recv(req, buf + cur_len, total_len);
+        received = httpd_req_recv(req, buf + cur_len, total_len - cur_len);
         if (received <= 0) {
             /* Respond with 500 Internal Server Error */
             httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to post control value");
@@ -223,7 +223,7 @@ static esp_err_t settings_clients_udp_post(httpd_req_t *req) {
         return ESP_FAIL;
     }
     while (cur_len < total_len) {
-        received = httpd_req_recv(req, buf + cur_len, total_len);
+        received = httpd_req_recv(req, buf + cur_len, total_len - cur_len);
         if (received <= 0) {
             /* Respond with 500 Internal Server Error */
             httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to post control value");

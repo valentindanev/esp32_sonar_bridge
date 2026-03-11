@@ -216,7 +216,7 @@ extern db_parameter_t db_param_deeper_pass;
 void db_param_init_parameters();
 void db_param_set_to_default(db_parameter_t *db_parameter);
 void db_param_reset_all();
-int db_param_print_values_to_buffer(uint8_t *str_buffer);
+int db_param_print_values_to_buffer(uint8_t *str_buffer, size_t str_buffer_size);
 void db_param_read_all_params_nvs(const nvs_handle_t *nvs_handle);
 void db_param_write_all_params_nvs(const nvs_handle_t *nvs_handle);
 void db_param_read_all_params_json(const cJSON *root_obj);

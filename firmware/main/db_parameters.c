@@ -641,35 +641,49 @@ void db_param_reset_all() {
 /**
  * Helper function to convert all parameters with their values to a string
  * buffer for logging etc.
- * @param str_buffer Buffer to write the parameter string - must be long enough
- * ~512 bytes
+ * @param str_buffer Buffer to write the parameter string
+ * @param str_buffer_size Size of the supplied buffer
  */
-int db_param_print_values_to_buffer(uint8_t *str_buffer) {
-  int str_len = 1; // overall length of the string in the str_buffer
-  str_buffer[0] = '\n';
-  str_buffer[1] = '\0';
+int db_param_print_values_to_buffer(uint8_t *str_buffer,
+                                    size_t str_buffer_size) {
+  if (str_buffer == NULL || str_buffer_size == 0) {
+    return 0;
+  }
+
+  size_t used_len = 0;
+  bool truncated = false;
+
+  int written = snprintf((char *)str_buffer, str_buffer_size, "\n");
+  if (written < 0) {
+    str_buffer[0] = '\0';
+    return 0;
+  }
+  used_len = (size_t)written < str_buffer_size ? (size_t)written
+                                               : str_buffer_size - 1;
+
   for (int i = 0; i < sizeof(db_params) / sizeof(db_params[0]); i++) {
     uint8_t param_str_buf[128]; // buffer for the string of a single value
+    int param_str_len = 0;
     switch (db_params[i]->type) {
     case STRING:
-      str_len += sprintf((char *)param_str_buf, "\t%s: %s\n",
-                         (char *)db_params[i]->db_name,
-                         (char *)db_params[i]->value.db_param_str.value);
+      param_str_len = snprintf((char *)param_str_buf, sizeof(param_str_buf),
+                               "\t%s: %s\n", (char *)db_params[i]->db_name,
+                               (char *)db_params[i]->value.db_param_str.value);
       break;
     case UINT8:
-      str_len += sprintf((char *)param_str_buf, "\t%s: %i\n",
-                         (char *)db_params[i]->db_name,
-                         db_params[i]->value.db_param_u8.value);
+      param_str_len = snprintf((char *)param_str_buf, sizeof(param_str_buf),
+                               "\t%s: %i\n", (char *)db_params[i]->db_name,
+                               db_params[i]->value.db_param_u8.value);
       break;
     case UINT16:
-      str_len += sprintf((char *)param_str_buf, "\t%s: %i\n",
-                         (char *)db_params[i]->db_name,
-                         db_params[i]->value.db_param_u16.value);
+      param_str_len = snprintf((char *)param_str_buf, sizeof(param_str_buf),
+                               "\t%s: %i\n", (char *)db_params[i]->db_name,
+                               db_params[i]->value.db_param_u16.value);
       break;
     case INT32:
-      str_len += sprintf((char *)param_str_buf, "\t%s: %li\n",
-                         (char *)db_params[i]->db_name,
-                         db_params[i]->value.db_param_i32.value);
+      param_str_len = snprintf((char *)param_str_buf, sizeof(param_str_buf),
+                               "\t%s: %li\n", (char *)db_params[i]->db_name,
+                               db_params[i]->value.db_param_i32.value);
       break;
     default:
       ESP_LOGE(
@@ -677,11 +691,35 @@ int db_param_print_values_to_buffer(uint8_t *str_buffer) {
           "db_param_print_values_to_buffer() -> db_parameter.type unknown!");
       break;
     }
-    strcat((char *)str_buffer,
-           (char *)param_str_buf); // add the string of the individual printed
-                                   // param to the big buffer
+
+    if (param_str_len < 0) {
+      continue;
+    }
+
+    if (used_len < str_buffer_size - 1) {
+      int append_result = snprintf((char *)str_buffer + used_len,
+                                   str_buffer_size - used_len, "%s",
+                                   (char *)param_str_buf);
+      if (append_result < 0) {
+        continue;
+      }
+      if ((size_t)append_result >= str_buffer_size - used_len) {
+        used_len = str_buffer_size - 1;
+        truncated = true;
+      } else {
+        used_len += (size_t)append_result;
+      }
+    } else {
+      truncated = true;
+    }
   }
-  return str_len;
+
+  if (truncated) {
+    ESP_LOGW(TAG, "Parameter log output truncated to %u bytes",
+             (unsigned int)(str_buffer_size - 1));
+  }
+
+  return (int)used_len;
 }
 
 /**

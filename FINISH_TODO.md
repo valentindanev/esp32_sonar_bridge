@@ -12,4 +12,6 @@ Notes:
   - `httpd` stack overflow
   - `Tmr Svc` stack overflow
   - hardwired UART parser mismatch
+  - settings save/reboot crash chain
+  - main-task stack regression introduced during save-path hardening
 - Archived probe/build logs and backups are kept locally under `archive/`.

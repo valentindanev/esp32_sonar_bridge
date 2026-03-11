@@ -21,6 +21,7 @@
 #include <esp_wifi_types.h>
 #include <lwip/apps/netbiosns.h>
 #include <nvs_flash.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -77,6 +78,40 @@
 
 static const char *TAG = "DB_ESP32";
 static const uint32_t DB_DEEPER_BOOT_CONNECT_WINDOW_MS = 60000;
+static const size_t DB_PARAM_LOG_BUFFER_SIZE = 2048;
+
+static void db_refresh_ap_sta_list_if_available(void) {
+  esp_err_t err = esp_wifi_ap_get_sta_list(&wifi_sta_list);
+  if (err == ESP_OK) {
+    return;
+  }
+
+  if (err == ESP_ERR_WIFI_STOP_STATE || err == ESP_ERR_WIFI_MODE ||
+      err == ESP_ERR_WIFI_NOT_INIT) {
+    ESP_LOGD(TAG, "Skipping AP station list refresh during Wi-Fi shutdown (%s)",
+             esp_err_to_name(err));
+    return;
+  }
+
+  ESP_ERROR_CHECK_WITHOUT_ABORT(err);
+}
+
+static void db_log_param_values(const char *prefix) {
+  uint8_t *param_str_buffer = calloc(DB_PARAM_LOG_BUFFER_SIZE, sizeof(uint8_t));
+  if (param_str_buffer == NULL) {
+    ESP_LOGE(TAG, "Failed to allocate parameter log buffer");
+    return;
+  }
+
+  db_param_print_values_to_buffer(param_str_buffer, DB_PARAM_LOG_BUFFER_SIZE);
+  if (prefix != NULL) {
+    ESP_LOGI(TAG, "%s%s", prefix, param_str_buffer);
+  } else {
+    ESP_LOGI(TAG, "%s", param_str_buffer);
+  }
+
+  free(param_str_buffer);
+}
 
 char CURRENT_CLIENT_IP[IP4ADDR_STRLEN_MAX] = "192.168.2.1";
 uint8_t DB_RADIO_IS_OFF = false; // keep track if we switched Wi-Fi/BLE off
@@ -278,8 +313,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
         (wifi_event_ap_staconnected_t *)event_data;
     ESP_LOGI(TAG, "WIFI_EVENT - Client connected - station:" MACSTR ", AID=%d",
              MAC2STR(event->mac), event->aid);
-    ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_ap_get_sta_list(
-        &wifi_sta_list)); // update list of connected stations
+    db_refresh_ap_sta_list_if_available(); // update list of connected stations
   } else if (event_id == WIFI_EVENT_AP_STADISCONNECTED) {
     wifi_event_ap_stadisconnected_t *event =
         (wifi_event_ap_stadisconnected_t *)event_data;
@@ -289,8 +323,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
     struct db_udp_client_t db_udp_client;
     memcpy(db_udp_client.mac, event->mac, sizeof(db_udp_client.mac));
     remove_from_known_udp_clients(udp_conn_list, db_udp_client);
-    ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_ap_get_sta_list(
-        &wifi_sta_list)); // update list of connected stations
+    db_refresh_ap_sta_list_if_available(); // update list of connected stations
   } else if (event_id == WIFI_EVENT_AP_START) {
     ESP_LOGI(TAG, "WIFI_EVENT_AP_START (SSID: %s PASS: %s)", DB_PARAM_WIFI_SSID,
              DB_PARAM_PASS);
@@ -737,9 +770,7 @@ void db_set_radio_status(uint8_t enable_wifi) {
 void db_write_settings_to_nvs() {
   // print parameters to console for logging
   ESP_LOGI(TAG, "Trying to save parameters:");
-  uint8_t param_str_buffer[512] = {0};
-  db_param_print_values_to_buffer(param_str_buffer);
-  ESP_LOGI(TAG, "%s", param_str_buffer);
+  db_log_param_values(NULL);
   ESP_LOGI(TAG, "Saving to NVS %s", NVS_NAMESPACE);
   nvs_handle_t my_handle;
   ESP_ERROR_CHECK(nvs_open(NVS_NAMESPACE, NVS_READWRITE, &my_handle));
@@ -806,19 +837,14 @@ void db_read_settings_nvs() {
     db_write_settings_to_nvs();
 
     // Print parameters to console for logging
-    uint8_t param_str_buffer[512] = {0};
-    db_param_print_values_to_buffer(param_str_buffer);
-    ESP_LOGI(TAG, "Initialized with default values:\n%s",
-             (char *)param_str_buffer);
+    db_log_param_values("Initialized with default values:\n");
   } else {
     ESP_LOGI(TAG, "Reading settings from NVS");
     db_param_read_all_params_nvs(&my_handle);
     nvs_close(my_handle);
 
     // print parameters to console for logging
-    uint8_t param_str_buffer[512] = {0};
-    db_param_print_values_to_buffer(param_str_buffer);
-    ESP_LOGI(TAG, "%s", (char *)param_str_buffer);
+    db_log_param_values(NULL);
 
     // Check if we have a saved UDP client from the last session. Add it to the
     // known udp clients if there is one.
@@ -919,9 +945,15 @@ void set_reset_trigger() {
  * debug issues better
  */
 void db_jtag_serial_info_print() {
-  uint8_t buffer[512];
-  const int len = db_param_print_values_to_buffer(buffer);
+  uint8_t *buffer = calloc(DB_PARAM_LOG_BUFFER_SIZE, sizeof(uint8_t));
+  if (buffer == NULL) {
+    ESP_LOGE(TAG, "Failed to allocate JTAG parameter log buffer");
+    return;
+  }
+
+  const int len = db_param_print_values_to_buffer(buffer, DB_PARAM_LOG_BUFFER_SIZE);
   write_to_serial(buffer, len);
+  free(buffer);
 }
 
 /**
