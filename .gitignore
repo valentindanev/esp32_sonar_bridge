@@ -1,0 +1,13 @@
+*_BACKUP_*
+build_log*.txt
+*.bin
+*.elf
+*.map
+*.pyc
+.env
+.DS_Store
+Thumbs.db
+
+/data/
+/logs/
+/output/
