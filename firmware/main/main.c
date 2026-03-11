@@ -132,19 +132,34 @@ static EventGroupHandle_t s_wifi_event_group;
 static TickType_t s_sta_retry_deadline_tick = 0;
 static uint32_t s_sta_retry_window_ms = 0;
 static bool s_sta_retry_uses_deadline = false;
+static bool s_deeper_sta_session_active = false;
 
 esp_netif_t *esp_default_netif;
 static esp_event_handler_instance_t s_wifi_any_id_handler;
 static esp_event_handler_instance_t s_sta_got_ip_handler;
 static esp_event_handler_instance_t s_ap_staipassigned_handler;
 
-static bool db_is_deeper_sta_target(void) {
+static bool db_is_saved_wifi_target_deeper(void) {
   return DB_PARAM_DEEPER_EN &&
          strcmp(DB_PARAM_WIFI_SSID, DB_PARAM_DEEPER_SSID) == 0;
 }
 
+static bool db_is_deeper_sta_target(void) {
+  return s_deeper_sta_session_active || db_is_saved_wifi_target_deeper();
+}
+
+static const char *db_wifi_ssid_for_log(void) {
+  if (s_deeper_sta_session_active) {
+    return DB_PARAM_DEEPER_SSID;
+  }
+  return DB_PARAM_WIFI_SSID;
+}
+
 static const char *db_wifi_password_for_log(void) {
-  if (db_is_deeper_sta_target()) {
+  if (s_deeper_sta_session_active) {
+    return strlen(DB_PARAM_DEEPER_PASS) > 0 ? "<configured>" : "<open>";
+  }
+  if (db_is_saved_wifi_target_deeper()) {
     return strlen(DB_PARAM_PASS) > 0 ? "<configured>" : "<open>";
   }
   return DB_PARAM_PASS;
@@ -222,6 +237,7 @@ static void db_unregister_wifi_handlers(void) {
 
 static void db_cleanup_wifi_runtime(void) {
   db_unregister_wifi_handlers();
+  s_deeper_sta_session_active = false;
 
   esp_err_t err = esp_wifi_stop();
   if (err != ESP_OK && err != ESP_ERR_WIFI_NOT_INIT &&
@@ -655,7 +671,7 @@ int db_init_wifi_clientmode(uint32_t connect_window_ms) {
   ESP_ERROR_CHECK(esp_wifi_set_inactive_time(WIFI_IF_STA, 3));
 
   ESP_LOGI(TAG, "Init of WiFi Client-Mode finished. (SSID: %s PASS: %s)",
-           DB_PARAM_WIFI_SSID, db_wifi_password_for_log());
+           db_wifi_ssid_for_log(), db_wifi_password_for_log());
 
   /* Waiting until either the connection is established (WIFI_CONNECTED_BIT) or
    * connection failed for the maximum number of re-tries (WIFI_FAIL_BIT). The
@@ -671,16 +687,16 @@ int db_init_wifi_clientmode(uint32_t connect_window_ms) {
    * can test which event actually happened. */
   bool enable_temp_ap_mode = false;
   if (bits & WIFI_CONNECTED_BIT) {
-    ESP_LOGI(TAG, "Connected to ap SSID:%s password:%s", DB_PARAM_WIFI_SSID,
+    ESP_LOGI(TAG, "Connected to ap SSID:%s password:%s", db_wifi_ssid_for_log(),
              db_wifi_password_for_log());
   } else if (bits & WIFI_FAIL_BIT) {
     ESP_LOGW(TAG, "Failed to connect to SSID:%s, password:%s",
-             DB_PARAM_WIFI_SSID, db_wifi_password_for_log());
+             db_wifi_ssid_for_log(), db_wifi_password_for_log());
     enable_temp_ap_mode = true;
   } else {
     if (connect_window_ms > 0) {
       ESP_LOGW(TAG, "Timed out after %lu ms while trying to connect to SSID:%s",
-               (unsigned long)connect_window_ms, DB_PARAM_WIFI_SSID);
+               (unsigned long)connect_window_ms, db_wifi_ssid_for_log());
       enable_temp_ap_mode = true;
     } else {
       ESP_LOGE(TAG, "UNEXPECTED WIFI EVENT");
@@ -983,6 +999,7 @@ void db_configure_antenna() {
 void app_main() {
   bool deeper_sta_connected = false;
   bool hardwired_sonar_selected = false;
+  s_deeper_sta_session_active = false;
 
   db_param_init_parameters();
   udp_conn_list =
@@ -1037,6 +1054,11 @@ void app_main() {
         ESP_LOGI(TAG, "Deeper boot probe failed. Staying in AP mode and using "
                       "hardwired sonar until the next reboot.");
       } else {
+        s_deeper_sta_session_active = true;
+        db_copy_cstr(DB_PARAM_WIFI_SSID, db_param_ssid.value.db_param_str.max_len,
+                     original_wifi_ssid);
+        db_copy_cstr(DB_PARAM_PASS, db_param_pass.value.db_param_str.max_len,
+                     original_wifi_pass);
         ESP_LOGI(TAG, "Deeper Fallback SUCCESS! We are now connected to the "
                       "Deeper Sonar AP.");
         deeper_sta_connected = true;
@@ -1094,6 +1116,7 @@ void app_main() {
                                    ? DB_SONAR_SOURCE_HARDWIRED
                                    : DB_SONAR_SOURCE_NONE;
     } else if (db_is_deeper_sta_target()) {
+      s_deeper_sta_session_active = true;
       deeper_sta_connected = true;
       DB_ACTIVE_SONAR_SOURCE = DB_SONAR_SOURCE_DEEPER;
     } else {

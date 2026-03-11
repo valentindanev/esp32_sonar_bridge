@@ -7,8 +7,8 @@
 ### Repo / Build State
 - Source-of-truth project path: `X:\backup\valentin\AI-Lab\projects\esp32_sonar_bridge`
 - Public repo: `https://github.com/valentindanev/esp32_sonar_bridge`
-- Current public/local HEAD before the latest uncommitted fixes: `main` at `0761aee` (`Normalize GPS readout font size`)
-- Current working tree is expected to be clean after committing the latest save/reboot and logging fixes from this session.
+- Current public/local HEAD should include the save/reboot hardening work from `11-03-2026`, plus the final Deeper/AP credential restore fix after the next push.
+- Current working tree should only contain the final `main.c` Deeper/AP credential restore fix and the documentation/release updates needed to publish it.
 - Local cleanup note:
   - root-level backups and probe/build logs are being archived under `archive/`
   - tracked next-step note lives in `FINISH_TODO.md`
@@ -21,6 +21,8 @@
   - `X:\backup\valentin\AI-Lab\projects\esp32_sonar_bridge\archive\legacy_git_metadata_20260311\esp32_sonar_bridge_nested_git_BACKUP_20260311`
 - Reliable local build mirror: `C:\Users\valen\esp32_sonar_build`
 - Active hardware target: classic ESP32 on `COM13`
+- Latest local prerelease package prepared under:
+  - `X:\backup\valentin\AI-Lab\projects\esp32_sonar_bridge\archive\releases\v0.1.0-beta2`
 - Flashing reminder: this board often needs manual download mode (`hold BOOT`, `tap RESET/EN`, keep holding `BOOT` for about `1-2s`)
 - Latest local step-1 build status:
   - `http_server.c` patched for HTTP stack usage reduction
@@ -32,8 +34,9 @@
   - `db_param_print_values_to_buffer()` was hardened to be bounded by caller-supplied buffer size instead of using unbounded `strcat()`
   - parameter dump buffers in `main.c` are now heap-backed via `calloc()` instead of using large local stack arrays
   - AP station-list refresh during shutdown is now guarded to suppress the old `ESP_ERR_WIFI_STOP_STATE` noise on intentional reboot
+  - successful Deeper boot sessions now restore the saved main AP `SSID` / `wifi_pass` instead of leaving the Deeper credentials in the top Wi-Fi settings fields
   - latest build succeeded in `C:\Users\valen\esp32_sonar_build`
-  - latest flash to `COM13` succeeded after the heap-backed logging and Wi-Fi shutdown-guard changes
+  - latest flash to `COM13` succeeded after syncing the corrected `main.c` into the local build mirror
 
 ### README Migration Notes
 - On `11-03-2026`, `README.md` was rewritten to be GitHub-facing instead of session-facing.
@@ -71,6 +74,7 @@
 - Latest verified build size after the boot-policy work: `0x11dae0`
 - Latest flash to classic ESP32 on `COM13` succeeded on `11-03-2026`
 - Latest dedicated-sonar-task build size: `0x11dcb0`
+- Latest Deeper/AP-credential-fix app SHA seen in boot log: `fb98d5e1b116d5ad...`
 - Serial logs after the final flash confirmed the new one-shot Deeper boot window:
   - `Retry to connect to the AP (...) within boot window (60000 ms)`
   - `Timed out after 60000 ms while trying to connect to SSID: Deeper CHIRP+ 3B6D`
@@ -92,6 +96,29 @@
   - no heap assert in `cJSON_Delete`
   - no `main` task stack overflow
   - no app-level `ESP_ERR_WIFI_STOP_STATE` warning during the AP shutdown that precedes reboot
+- Bench mode matrix now verified on live hardware:
+  - both sonars disabled
+  - hardwired enabled, Deeper disabled
+  - hardwired disabled, Deeper enabled
+  - both enabled
+- Latest verified behavior for the two sonar-specific boot modes:
+  - hardwired-only boot:
+    - `ss_hardwired_en: 1`
+    - `ss_deeper_en: 0`
+    - hardwired task starts and valid UART frames are published as MAVLink `DISTANCE_SENSOR`
+  - both enabled:
+    - `ss_hardwired_en: 1`
+    - `ss_deeper_en: 1`
+    - if Deeper connects during boot, `Deeper selected at boot. Hardwired sonar stays off.`
+    - only Deeper `DISTANCE_SENSOR` messages are then published for that boot
+- The Deeper/AP credential leak is now fixed and verified live:
+  - top Wi-Fi settings in the Web UI stay:
+    - `SSID = DroneBridge for ESP32`
+    - `Password = dronebridge`
+  - the Deeper-specific fields still show:
+    - `Deeper Sonar SSID = Deeper CHIRP+ 3B6D`
+    - open password placeholder
+  - this remains true even after a successful Deeper boot session with both sonar options enabled
 - Remaining shutdown noise during a successful save/reboot:
   - low-level ESP-IDF log line `wifi:NAN WiFi stop`
   - this appears to be framework noise during Wi-Fi teardown, not a project-level fault
@@ -100,63 +127,30 @@
   - this is not a reboot loop
 
 ### Current Known Open Items
-- New confirmed root cause from live AP + serial reproduction:
-  - the ESP is not just "disconnecting" when the WebUI is opened
-  - the board crashes with `***ERROR*** A stack overflow in task httpd has been detected.`
-  - the serial log then shows `rst:0xc (SW_CPU_RESET)`
-  - this was reproduced while:
-    - staying on the AP long enough for Deeper fallback to finish
-    - joining the AP from Windows
-    - letting the HTTP/captive-portal probing start
-  - key repro logs saved on disk:
-    - `http_crash_probe_20260311.txt`
-    - `http_crash_probe_live_20260311_b.txt`
-- Step 1 mitigation is now in source and flashed:
-  - moved the two `1600` byte debug buffers in `system_stats_get_handler()` off the `httpd` task stack and onto the heap
-  - increased the HTTP server task stack from the ESP-IDF default `4096` to `8192`
-  - file changed:
-    - `firmware/main/http_server.c`
-  - mapped-drive backup created before edit:
-    - `firmware/main/http_server_BACKUP_20260311_httpstackfix.c`
-  - build/flash result:
-    - new app SHA in boot log: `ac2fd3c83aaab168...`
-    - new combined repro log after flash: `http_crash_probe_live_20260311_c_after_fix.txt`
-  - important current interpretation:
-    - in the post-flash serial reproduction, the earlier `***ERROR*** A stack overflow in task httpd has been detected.` message did **not** recur
-    - the previous confirmed `httpd` crash appears fixed
-    - however, the automated Windows reconnect test then hit a separate issue:
-      - after fallback, serial logs report `WIFI_EVENT_AP_START`
-      - but `netsh` reported `The network specified by profile "DroneBridge for ESP32" is not available to connect.`
-      - so step 1 exposed a new AP visibility/association problem that still needs separate investigation
-- Deeper still often fails to join during desk tests with `reason: 201` if the sonar is not fully awake / advertising in water mode.
-- Hardwired sonar runtime is now bench-validated at the ESP level with real UART frames and live `DISTANCE_SENSOR` publishing.
-- Real flight-controller end-to-end validation for the hardwired path is still pending.
-- If no hardwired sensor is connected, repeated `DANEVI_SONAR: No hardwired sonar response within 100 ms` warnings are expected and not a firmware regression.
 - The frontend fetch noise (`signal is aborted without reason`) is still open. Likely cause: `frontend/dronebridge.js` creates an `AbortController` timeout in `get_json()` and never clears it after successful fetches, while `/api/system/stats` polling continues every `500 ms`.
+- During intentional reboot while currently connected to Deeper in STA mode, the disconnect handler still logs:
+  - `ESP_ERR_WIFI_NOT_STARTED ... esp_wifi_connect()`
+  - this is shutdown-time reconnect noise, not a reboot failure
+- Deeper still often fails to join during desk tests with `reason: 201` if the sonar is not fully awake / advertising in water mode.
+- Longer soak validation is still pending.
+- Real flight-controller end-to-end validation for both sonar sources is still pending.
+- If no hardwired sensor is connected, repeated `DANEVI_SONAR: No hardwired sonar response within 100 ms` warnings are expected and not a firmware regression.
 - The hardwired toggle is no longer an unconditional master switch. Current behavior is intentionally subordinate to the boot policy:
   - if the Deeper boot probe succeeds, hardwired stays off for that boot
   - if the Deeper boot probe fails, hardwired is started for that boot even if the saved hardwired toggle is off
-- New hardwired-sonar finding from donor review:
-  - `donors/arduino_sonar.ino` and the current `firmware/main/danevi_sonar.c` follow the same pattern:
-    - trigger byte `0x55`
-    - expect `5` total bytes
-    - checksum excludes the `0xFF` header
-  - the newly collected seller documentation for the physical UART sensor points to a different protocol:
-    - trigger can be any serial data, with `0xFF` strongly indicated by the vendor tool
-    - response is `4` total bytes: `FF Data_H Data_L SUM`
-    - checksum should be `(0xFF + Data_H + Data_L) & 0xFF`
-  - practical implication:
-    - the current hardwired ESP32 parser is likely inheriting an Arduino-donor assumption that may be wrong for the real `GL041MT` / `GL042MT` sensor on the desk
-- The hardwired parser mismatch is now fixed in source and flashed:
+- The hardwired parser mismatch is fixed in source and flashed:
   - `danevi_sonar.c` now follows the manufacturer UART format:
     - trigger `0xFF`
     - `4` byte response `FF Data_H Data_L SUM`
     - checksum `(0xFF + Data_H + Data_L) & 0xFF`
   - the old `ERR misaligned frame len=4 ...` behavior is gone in current runtime logs
-- The earlier `Tmr Svc` stack overflow root cause is now addressed in source and flashed:
+- The earlier `Tmr Svc` stack overflow root cause is addressed in source and flashed:
   - `db_timers.c` moved sonar MAVLink encode/write/send work into a dedicated task with its own MAVLink status state and buffer
   - the 10 Hz timer now only wakes that task
   - latest runtime log shows the fix holding under real hardwired data
+- Known non-blocking quirk:
+  - ESP-IDF still logs a default AP startup line for `192.168.4.1` before the configured runtime AP settles on `192.168.5.1`
+  - this has not broken the live Web UI path and is currently left as a documented upstream/framework-style quirk
 
 ### Hardware Notes For The Next Session
 - Default hardwired sonar pins in firmware:
@@ -171,10 +165,10 @@
 
 ### Recommended Next Steps
 1. Fix the frontend polling / abort noise in `frontend/dronebridge.js`.
-2. Reconcile AP fallback / IP behavior so the configured AP IP and the runtime fallback IP are consistent.
+2. Suppress the Deeper STA reconnect attempt during intentional reboot so the shutdown log no longer emits `ESP_ERR_WIFI_NOT_STARTED`.
 3. Run a longer soak test with the Web UI open and both sonar modes exercised.
 4. Validate end-to-end delivery to a real flight controller for both sonar sources.
-5. Re-test Deeper boot selection with the sonar awake in water after the cleanup items above.
+5. Keep the AP startup `192.168.4.1` log quirk documented, but do not prioritize it unless it becomes a real connectivity problem.
 
 ## Earlier Session Notes
 - Date: 11-03-2026
