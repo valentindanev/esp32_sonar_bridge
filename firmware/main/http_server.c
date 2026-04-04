@@ -24,6 +24,9 @@
 #include <fcntl.h>
 #include <lwip/sockets.h>
 #include <esp_chip_info.h>
+#include <esp_app_format.h>
+#include <esp_ota_ops.h>
+#include <esp_partition.h>
 #include "esp_http_server.h"
 #include "esp_system.h"
 #include "esp_log.h"
@@ -51,6 +54,99 @@
 #define SCRATCH_BUFSIZE (10240)
 #define DB_HTTP_DEBUG_LOG_BUFFER_SIZE (1600)
 #define DB_HTTP_SERVER_STACK_SIZE (8192)
+#define DB_HTTP_OTA_RESPONSE_DELAY_MS (1500)
+
+static const char *DB_HTTP_OTA_PORTAL_HTML =
+    "<!DOCTYPE html>"
+    "<html lang=\"en\">"
+    "<head>"
+    "<meta charset=\"utf-8\">"
+    "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+    "<title>ESP32 Wireless Update</title>"
+    "<style>"
+    "body{font-family:Segoe UI,Arial,sans-serif;background:#0b1220;color:#e5eefb;margin:0;padding:24px;}"
+    ".wrap{max-width:880px;margin:0 auto;}"
+    ".card{background:#121b2d;border:1px solid #31425f;border-radius:14px;padding:20px;margin-bottom:18px;box-shadow:0 10px 30px rgba(0,0,0,.22);}"
+    "h1,h2{margin-top:0;color:#f5f9ff;}p,li{line-height:1.55;}"
+    "code{background:#08101d;padding:2px 6px;border-radius:6px;color:#8fd3ff;}"
+    "input[type=file]{display:block;margin:10px 0 14px 0;color:#dbe7ff;}"
+    "button,a.btn{display:inline-block;background:#2a68ff;color:#fff;border:none;border-radius:10px;padding:12px 16px;text-decoration:none;font-weight:600;cursor:pointer;margin-right:10px;margin-top:8px;}"
+    "button.alt,a.btn.alt{background:#25324a;}button.warn{background:#d76b00;}"
+    "button:disabled{opacity:.55;cursor:not-allowed;}"
+    ".status{padding:12px 14px;border-radius:10px;background:#0d1524;border:1px solid #31425f;white-space:pre-wrap;}"
+    "</style>"
+    "</head>"
+    "<body>"
+    "<div class=\"wrap\">"
+    "<div class=\"card\">"
+    "<h1>Wireless Update & Recovery</h1>"
+    "<p>This page lives inside the firmware image, not inside SPIFFS. That means it stays available even if the web partition is damaged, which gives the bait boat a built-in recovery path.</p>"
+    "<div id=\"ota-info\" class=\"status\">Loading update status...</div>"
+    "<div style=\"margin-top:14px;\">"
+    "<a class=\"btn alt\" href=\"/\">Open Main UI</a>"
+    "<button class=\"warn\" onclick=\"rebootIntoUpdateMode()\">Reboot Into AP Update Mode</button>"
+    "</div>"
+    "</div>"
+    "<div class=\"card\">"
+    "<h2>Firmware OTA</h2>"
+    "<p>Upload <code>db_esp32.bin</code>. The image is written to the inactive OTA slot, the boot partition is switched, and the ESP restarts.</p>"
+    "<input id=\"appFile\" type=\"file\" accept=\".bin\">"
+    "<button onclick=\"uploadFile('/api/update/app','appFile','Firmware upload started. The ESP will reboot when the upload completes successfully.')\">Upload Firmware & Reboot</button>"
+    "</div>"
+    "<div class=\"card\">"
+    "<h2>Web UI OTA</h2>"
+    "<p>Upload <code>www.bin</code> if the SPIFFS web assets changed. If this upload is interrupted, refresh <code>/ota</code> after the ESP reboots and try again.</p>"
+    "<input id=\"webFile\" type=\"file\" accept=\".bin\">"
+    "<button onclick=\"uploadFile('/api/update/web','webFile','Web UI upload started. The ESP will reboot when the upload completes successfully.')\">Upload Web UI & Reboot</button>"
+    "</div>"
+    "<div class=\"card\">"
+    "<h2>Status</h2>"
+    "<div id=\"status\" class=\"status\">Idle.</div>"
+    "</div>"
+    "</div>"
+    "<script>"
+    "function setStatus(msg){document.getElementById('status').textContent=msg;}"
+    "function line(label,value){return label+': '+value;}"
+    "async function refreshInfo(){"
+    " const res=await fetch('/api/update/info');"
+    " if(!res.ok){throw new Error('Failed to load OTA info: '+res.status);}"
+    " const info=await res.json();"
+    " const lines=["
+    "  line('Running partition',info.running_partition_label+' ('+info.running_partition_subtype+')'),"
+    "  line('Boot partition',info.boot_partition_label+' ('+info.boot_partition_subtype+')'),"
+    "  line('Next OTA target',info.next_update_partition_label+' ('+info.next_update_partition_subtype+')'),"
+    "  line('Firmware version',info.running_app_version),"
+    "  line('Firmware build',info.running_app_date+' '+info.running_app_time),"
+    "  line('Web filesystem mounted',info.web_fs_available ? 'yes' : 'no'),"
+    "  line('Web partition size',info.web_partition_size_bytes+' bytes')"
+    " ];"
+    " document.getElementById('ota-info').textContent=lines.join('\\n');"
+    "}"
+    "async function uploadFile(endpoint,inputId,startMessage){"
+    " const input=document.getElementById(inputId);"
+    " if(!input.files.length){setStatus('Select a .bin file first.');return;}"
+    " const file=input.files[0];"
+    " setStatus(startMessage+'\\nUploading '+file.name+' ('+file.size+' bytes)... Do not power off the boat.');"
+    " const res=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:file});"
+    " const text=await res.text();"
+    " let message=text;"
+    " try{const json=JSON.parse(text);if(json.msg){message=json.msg;}}catch(e){}"
+    " if(!res.ok){throw new Error(message || ('Upload failed with status '+res.status));}"
+    " setStatus(message || 'Upload finished. Device rebooting...');"
+    "}"
+    "async function rebootIntoUpdateMode(){"
+    " setStatus('Scheduling one-time AP update mode and rebooting...');"
+    " const res=await fetch('/api/update/boot-ap-once',{method:'POST'});"
+    " const text=await res.text();"
+    " let message=text;"
+    " try{const json=JSON.parse(text);if(json.msg){message=json.msg;}}catch(e){}"
+    " if(!res.ok){throw new Error(message || ('Failed with status '+res.status));}"
+    " setStatus(message || 'Rebooting into AP update mode...');"
+    "}"
+    "refreshInfo().catch(err=>setStatus(err.message));"
+    "</script>"
+    "</body>"
+    "</html>";
 
 typedef struct rest_server_context {
     char base_path[ESP_VFS_PATH_MAX + 1];
@@ -69,6 +165,22 @@ static bool db_http_runtime_has_ap(void) {
     wifi_mode_t mode = WIFI_MODE_NULL;
     return esp_wifi_get_mode(&mode) == ESP_OK &&
            (mode == WIFI_MODE_AP || mode == WIFI_MODE_APSTA);
+}
+
+static const char *db_http_partition_label_or_unknown(const esp_partition_t *part) {
+    if (part == NULL || part->label[0] == '\0') {
+        return "<none>";
+    }
+    return part->label;
+}
+
+static void db_http_resp_sendstr_with_retry(httpd_req_t *req, const char *resp_str);
+
+static void db_http_send_json_and_restart(httpd_req_t *req, const char *resp_str) {
+    httpd_resp_set_type(req, "application/json");
+    db_http_resp_sendstr_with_retry(req, resp_str);
+    vTaskDelay(pdMS_TO_TICKS(DB_HTTP_OTA_RESPONSE_DELAY_MS));
+    esp_restart();
 }
 
 /**
@@ -115,6 +227,16 @@ static esp_err_t rest_common_get_handler(httpd_req_t *req) {
     char filepath[FILE_PATH_MAX];
 
     rest_server_context_t *rest_context = (rest_server_context_t *) req->user_ctx;
+    if (!db_is_web_fs_available()) {
+        if (strcmp(req->uri, "/") == 0 || strcmp(req->uri, "/index.html") == 0) {
+            httpd_resp_set_type(req, "text/html");
+            return httpd_resp_send(req, DB_HTTP_OTA_PORTAL_HTML,
+                                   HTTPD_RESP_USE_STRLEN);
+        }
+        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND,
+                            "web filesystem unavailable; open /ota for recovery");
+        return ESP_FAIL;
+    }
     strlcpy(filepath, rest_context->base_path, sizeof(filepath));
     if (req->uri[strlen(req->uri) - 1] == '/') {
         strlcat(filepath, "/index.html", sizeof(filepath));
@@ -396,6 +518,28 @@ static esp_err_t system_stats_get_handler(httpd_req_t *req) {
                                 : -1);
     cJSON_AddNumberToObject(root, "hardwired_sample_age_ms",
                             hardwired_snapshot.sample_age_ms);
+    cJSON_AddNumberToObject(root, "hardwired_raw_depth_mm",
+                            hardwired_snapshot.has_raw_distance
+                                ? hardwired_snapshot.raw_depth_mm
+                                : -1);
+    cJSON_AddNumberToObject(root, "hardwired_raw_sample_age_ms",
+                            hardwired_snapshot.raw_sample_age_ms);
+    cJSON_AddNumberToObject(root, "hardwired_last_good_depth_mm",
+                            hardwired_snapshot.has_last_good_distance
+                                ? hardwired_snapshot.last_good_depth_mm
+                                : -1);
+    cJSON_AddNumberToObject(root, "hardwired_last_good_sample_age_ms",
+                            hardwired_snapshot.last_good_sample_age_ms);
+    cJSON_AddNumberToObject(root, "hardwired_zero_run_active",
+                            hardwired_snapshot.zero_run_active ? 1 : 0);
+    cJSON_AddNumberToObject(root, "hardwired_zero_run_age_ms",
+                            hardwired_snapshot.zero_run_age_ms);
+    cJSON_AddNumberToObject(root, "hardwired_consecutive_zero_frames",
+                            hardwired_snapshot.consecutive_zero_frames);
+    cJSON_AddNumberToObject(root, "hardwired_zero_filter_holding",
+                            hardwired_snapshot.zero_filter_holding_last_good
+                                ? 1
+                                : 0);
     cJSON_AddStringToObject(root, "deeper_debug", deeper_debug_log);
     cJSON_AddNumberToObject(root, "deeper_depth_mm",
                             deeper_snapshot.has_depth ? deeper_snapshot.depth_mm
@@ -511,6 +655,220 @@ static esp_err_t settings_get_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
+static esp_err_t ota_portal_get_handler(httpd_req_t *req) {
+    httpd_resp_set_type(req, "text/html");
+    return httpd_resp_send(req, DB_HTTP_OTA_PORTAL_HTML, HTTPD_RESP_USE_STRLEN);
+}
+
+static esp_err_t update_info_get_handler(httpd_req_t *req) {
+    httpd_resp_set_type(req, "application/json");
+    cJSON *root = cJSON_CreateObject();
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    const esp_partition_t *boot = esp_ota_get_boot_partition();
+    const esp_partition_t *next = esp_ota_get_next_update_partition(NULL);
+    const esp_partition_t *web = esp_partition_find_first(
+        ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS,
+        DB_WEB_PARTITION_LABEL);
+    esp_app_desc_t running_desc;
+
+    cJSON_AddStringToObject(root, "running_partition_label",
+                            db_http_partition_label_or_unknown(running));
+    cJSON_AddNumberToObject(root, "running_partition_subtype",
+                            running ? running->subtype : -1);
+    cJSON_AddStringToObject(root, "boot_partition_label",
+                            db_http_partition_label_or_unknown(boot));
+    cJSON_AddNumberToObject(root, "boot_partition_subtype",
+                            boot ? boot->subtype : -1);
+    cJSON_AddStringToObject(root, "next_update_partition_label",
+                            db_http_partition_label_or_unknown(next));
+    cJSON_AddNumberToObject(root, "next_update_partition_subtype",
+                            next ? next->subtype : -1);
+    cJSON_AddNumberToObject(root, "web_fs_available",
+                            db_is_web_fs_available() ? 1 : 0);
+    cJSON_AddNumberToObject(root, "web_partition_size_bytes",
+                            web ? web->size : 0);
+
+    if (running != NULL &&
+        esp_ota_get_partition_description(running, &running_desc) == ESP_OK) {
+        cJSON_AddStringToObject(root, "running_app_version",
+                                running_desc.version);
+        cJSON_AddStringToObject(root, "running_app_date", running_desc.date);
+        cJSON_AddStringToObject(root, "running_app_time", running_desc.time);
+    } else {
+        cJSON_AddStringToObject(root, "running_app_version", "unknown");
+        cJSON_AddStringToObject(root, "running_app_date", __DATE__);
+        cJSON_AddStringToObject(root, "running_app_time", __TIME__);
+    }
+
+    const char *sys_info = cJSON_Print(root);
+    db_http_resp_sendstr_with_retry(req, sys_info);
+    free((void *)sys_info);
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+
+static esp_err_t update_boot_ap_once_post_handler(httpd_req_t *req) {
+    esp_err_t err = db_request_update_ap_mode_on_next_boot();
+    if (err != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "failed to schedule update AP mode");
+        return ESP_FAIL;
+    }
+
+    db_http_send_json_and_restart(
+        req,
+        "{\n"
+        "  \"status\": \"success\",\n"
+        "  \"msg\": \"One-time AP update mode scheduled. Rebooting now...\"\n"
+        "}");
+    return ESP_OK;
+}
+
+static esp_err_t update_app_post_handler(httpd_req_t *req) {
+    rest_server_context_t *rest_context = (rest_server_context_t *)req->user_ctx;
+    const esp_partition_t *update_partition =
+        esp_ota_get_next_update_partition(NULL);
+    esp_ota_handle_t update_handle = 0;
+    bool checked_header = false;
+    int remaining = req->content_len;
+
+    if (update_partition == NULL) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "no OTA partition available");
+        return ESP_FAIL;
+    }
+
+    if (req->content_len <= 0 || req->content_len > (int)update_partition->size) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                            "firmware size does not fit the OTA partition");
+        return ESP_FAIL;
+    }
+
+    esp_err_t err =
+        esp_ota_begin(update_partition, OTA_WITH_SEQUENTIAL_WRITES, &update_handle);
+    if (err != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            esp_err_to_name(err));
+        return ESP_FAIL;
+    }
+
+    while (remaining > 0) {
+        int to_read = remaining > SCRATCH_BUFSIZE ? SCRATCH_BUFSIZE : remaining;
+        int received = httpd_req_recv(req, rest_context->scratch, to_read);
+        if (received <= 0) {
+            esp_ota_abort(update_handle);
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                                "firmware upload interrupted");
+            return ESP_FAIL;
+        }
+
+        if (!checked_header) {
+            if ((uint8_t)rest_context->scratch[0] != ESP_IMAGE_HEADER_MAGIC) {
+                esp_ota_abort(update_handle);
+                httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                                    "uploaded file is not a valid ESP32 app image");
+                return ESP_FAIL;
+            }
+            checked_header = true;
+        }
+
+        err = esp_ota_write(update_handle, rest_context->scratch, received);
+        if (err != ESP_OK) {
+            esp_ota_abort(update_handle);
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                                esp_err_to_name(err));
+            return ESP_FAIL;
+        }
+        remaining -= received;
+    }
+
+    err = esp_ota_end(update_handle);
+    if (err != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            esp_err_to_name(err));
+        return ESP_FAIL;
+    }
+
+    err = esp_ota_set_boot_partition(update_partition);
+    if (err != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            esp_err_to_name(err));
+        return ESP_FAIL;
+    }
+
+    db_http_send_json_and_restart(
+        req,
+        "{\n"
+        "  \"status\": \"success\",\n"
+        "  \"msg\": \"Firmware upload complete. Boot partition switched to the new OTA slot. Rebooting now...\"\n"
+        "}");
+    return ESP_OK;
+}
+
+static esp_err_t update_web_post_handler(httpd_req_t *req) {
+    rest_server_context_t *rest_context = (rest_server_context_t *)req->user_ctx;
+    const esp_partition_t *web_partition = esp_partition_find_first(
+        ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS,
+        DB_WEB_PARTITION_LABEL);
+    size_t write_offset = 0;
+    int remaining = req->content_len;
+
+    if (web_partition == NULL) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "web partition not found");
+        return ESP_FAIL;
+    }
+
+    if (req->content_len != (int)web_partition->size) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                            "web image size must match the SPIFFS partition size");
+        return ESP_FAIL;
+    }
+
+    esp_err_t err = db_unmount_web_fs();
+    if (err != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "failed to unmount web filesystem");
+        return ESP_FAIL;
+    }
+
+    err = esp_partition_erase_range(web_partition, 0, web_partition->size);
+    if (err != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            esp_err_to_name(err));
+        return ESP_FAIL;
+    }
+
+    while (remaining > 0) {
+        int to_read = remaining > SCRATCH_BUFSIZE ? SCRATCH_BUFSIZE : remaining;
+        int received = httpd_req_recv(req, rest_context->scratch, to_read);
+        if (received <= 0) {
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                                "web UI upload interrupted; refresh /ota and retry");
+            return ESP_FAIL;
+        }
+
+        err = esp_partition_write(web_partition, write_offset,
+                                  rest_context->scratch, received);
+        if (err != ESP_OK) {
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                                esp_err_to_name(err));
+            return ESP_FAIL;
+        }
+
+        write_offset += received;
+        remaining -= received;
+    }
+
+    db_http_send_json_and_restart(
+        req,
+        "{\n"
+        "  \"status\": \"success\",\n"
+        "  \"msg\": \"Web UI partition updated successfully. Rebooting now...\"\n"
+        "}");
+    return ESP_OK;
+}
+
 esp_err_t start_rest_server(const char *base_path) {
     REST_CHECK(base_path, "wrong base path", err);
     rest_server_context_t *rest_context = calloc(1, sizeof(rest_server_context_t));
@@ -520,7 +878,7 @@ esp_err_t start_rest_server(const char *base_path) {
     httpd_handle_t server = NULL;
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.uri_match_fn = httpd_uri_match_wildcard;
-    config.max_uri_handlers = 9;
+    config.max_uri_handlers = 16;
     config.stack_size = DB_HTTP_SERVER_STACK_SIZE;
 
     ESP_LOGI(TAG, "Starting HTTP Server");
@@ -587,6 +945,46 @@ esp_err_t start_rest_server(const char *base_path) {
             .user_ctx = rest_context
     };
     httpd_register_uri_handler(server, &settings_clients_clear_udp_get_uri);
+
+    httpd_uri_t ota_portal_get_uri = {
+            .uri = "/ota",
+            .method = HTTP_GET,
+            .handler = ota_portal_get_handler,
+            .user_ctx = rest_context
+    };
+    httpd_register_uri_handler(server, &ota_portal_get_uri);
+
+    httpd_uri_t update_info_get_uri = {
+            .uri = "/api/update/info",
+            .method = HTTP_GET,
+            .handler = update_info_get_handler,
+            .user_ctx = rest_context
+    };
+    httpd_register_uri_handler(server, &update_info_get_uri);
+
+    httpd_uri_t update_app_post_uri = {
+            .uri = "/api/update/app",
+            .method = HTTP_POST,
+            .handler = update_app_post_handler,
+            .user_ctx = rest_context
+    };
+    httpd_register_uri_handler(server, &update_app_post_uri);
+
+    httpd_uri_t update_web_post_uri = {
+            .uri = "/api/update/web",
+            .method = HTTP_POST,
+            .handler = update_web_post_handler,
+            .user_ctx = rest_context
+    };
+    httpd_register_uri_handler(server, &update_web_post_uri);
+
+    httpd_uri_t update_boot_ap_once_post_uri = {
+            .uri = "/api/update/boot-ap-once",
+            .method = HTTP_POST,
+            .handler = update_boot_ap_once_post_handler,
+            .user_ctx = rest_context
+    };
+    httpd_register_uri_handler(server, &update_boot_ap_once_post_uri);
 
     /* URI handler for getting web server files */
     httpd_uri_t common_get_uri = {

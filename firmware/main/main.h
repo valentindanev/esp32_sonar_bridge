@@ -17,9 +17,14 @@
  *
  */
 
+#include <stdbool.h>
+#include <esp_err.h>
+
 
 #ifndef DB_ESP32_MAIN_H
 #define DB_ESP32_MAIN_H
+
+#define DB_WEB_PARTITION_LABEL "www"
 
 #ifdef CONFIG_DB_HAS_RF_SWITCH
 #define DB_HAS_RF_SWITCH 1
@@ -31,5 +36,8 @@ void db_jtag_serial_info_print();
 void db_write_settings_to_nvs();
 void save_udp_client_to_nvm(struct db_udp_client_t *new_db_udp_client, bool clear_client);
 void db_set_radio_status(uint8_t enable_wifi);
+bool db_is_web_fs_available(void);
+esp_err_t db_unmount_web_fs(void);
+esp_err_t db_request_update_ap_mode_on_next_boot(void);
 
 #endif //DB_ESP32_MAIN_H

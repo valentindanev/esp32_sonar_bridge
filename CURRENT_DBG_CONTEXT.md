@@ -1,30 +1,103 @@
-# Current Debugging Context - ESP32 Sonar Bridge
+﻿# Current Debugging Context - ESP32 Sonar Bridge
 
 ## Latest Session Update
-- Date: 11-03-2026
+- Date: 12-03-2026
 - This file is the compaction handoff for the current session. The older detailed notes below are still useful, but the bullets in this section are the fastest way to resume work.
 
+### Agreed Hardwired Zero-Filter Plan - 15-03-2026
+- User and agent agreed that hardwired sonar `0 mm` is not a useful FC depth value for this boat/mapping use case.
+- Working interpretation:
+  - `0 mm` should be treated as an invalid or unusable hardwired sample
+  - likely causes include brief transducer exit from water, turbulence, bubbles, or lost bottom returns
+  - `0 mm` should remain visible in raw debug/observability so the failure mode is not hidden
+- Agreed firmware behavior target:
+  - keep hardwired polling at `100 ms`
+  - do **not** let `0 mm` overwrite the FC-facing hardwired depth immediately
+  - hold the last good non-zero hardwired reading for a short grace window
+  - if the zero run continues past the grace window, stop reporting hardwired depth instead of publishing `0`
+  - resume immediately when a new non-zero hardwired frame arrives
+- Agreed observability target:
+  - preserve raw hardwired frame debug
+  - add enough diagnostics to distinguish:
+    - last raw hardwired reading
+    - last good non-zero hardwired reading
+    - consecutive zero count / zero-run state
+- Practical workflow note:
+  - user plans to leave a USB cable inside the boat on the next open/flash cycle, so future firmware iteration cost should be much lower
+- Durable implementation plan for this work is tracked in:
+  - `HARDWIRED_ZERO_FILTER_IMPLEMENTATION_PLAN_15-03-2026.md`
+- Implementation progress update:
+  - backend zero-filter slice is now implemented in `firmware/main/danevi_sonar.c` and `firmware/main/danevi_sonar.h`
+  - current first-pass grace window is `600 ms`
+  - `/api/system/stats` now exposes raw hardwired depth, last good hardwired depth, zero-run state, and zero-filter hold status
+  - frontend hardwired summary now shows published depth, last raw reading, and filter status for easier lake/bench interpretation
+  - firmware build passed in the known-good local mirror at `C:\Users\valen\esp32_sonar_build`
+  - remaining practical work is flash + bench validation on hardware
+
+### Deeper Water Temperature MAVLink Telemetry - 15-03-2026
+- Added Deeper water temperature publishing to MAVLink from `firmware/main/db_timers.c`
+- Current message choice is `NAMED_VALUE_FLOAT` with name `waterTemp`
+- Publish policy:
+  - only when `DB_ACTIVE_SONAR_SOURCE` is `DB_SONAR_SOURCE_DEEPER`
+  - only when the Deeper snapshot still has a fresh temperature value
+  - publish rate limited to about `1 Hz`
+- Transport path matches the sonar publisher:
+  - write to FC over serial
+  - also forward to radio clients
+- Important intent note:
+  - this is an honest telemetry value, not a fake `SCALED_PRESSURE*` barometer message
+  - practical validation still needed on the target FC/GCS to confirm how the receiving side displays or logs `waterTemp`
+
+### Field Test Note - 14-03-2026
+- Lake validation was performed with the hardwired sonar path only. Deeper was not tested in this run.
+- End-to-end data path is now confirmed in real use for the hardwired sonar:
+  - sonar -> ESP32
+  - ESP32 -> flight controller
+  - flight controller -> ELRS / RadioMaster TX16S backpack link
+  - radio backpack -> phone
+  - phone -> Carp Pilot app
+- User-observed depth behavior on the lake:
+  - near shore startup depth was about `0.2 m`
+  - moving farther out, the depth increased to about `0.7 m`
+  - after going deeper than that, the displayed depth dropped to `0` and stayed there for a while
+  - while returning toward shore, the display started reporting again at about `0.7 m`
+  - approaching shallow water again, the depth decreased back toward about `0.2 m`
+- Current FC configuration note:
+  - `RNGFND1_MAX = 7 m`
+  - this makes a flight-controller max-range clamp at `0.7 m` unlikely
+- Planned next field step:
+  - repeat the lake test while monitoring all three views at the same time:
+    - radio telemetry
+    - phone app
+    - ESP web page / hardwired debug panel
+- Initial interpretation from the field behavior:
+  - the hardwired telemetry chain did not appear to freeze
+  - the ESP32 likely did not reboot-loop during the zero-depth interval because valid depth reporting resumed again without needing intervention
+  - future debugging should focus first on why the hardwired sonar path can report a valid-looking `0` in deeper water instead of assuming an end-to-end link failure
+
 ### Repo / Build State
-- Source-of-truth project path: `X:\backup\valentin\AI-Lab\projects\esp32_sonar_bridge`
+- Source-of-truth project path: `X:\backup\valentin\AI-Lab\projects\archive\esp32_sonar_bridge`
 - Public repo: `https://github.com/valentindanev/esp32_sonar_bridge`
-- Current public/local HEAD includes the final Deeper/AP credential restore fix, the refreshed bench-validation notes, and the published `v0.1.0-beta2` prerelease follow-up docs.
+- Project status is now archived locally under `projects/archive/esp32_sonar_bridge` and should be treated as a live, field-validated project rather than active development.
+- Current public/local HEAD includes the final Deeper/AP credential restore fix, the refreshed bench-validation notes, and the published `v1.0.0` release.
 - Current working tree should be clean apart from ignored local-only archive/build content.
 - Local cleanup note:
   - root-level backups and probe/build logs are being archived under `archive/`
   - tracked next-step note lives in `FINISH_TODO.md`
   - `/archive/` is ignored by Git and is intended to stay local-only
+  - the interrupted source-path leftovers from the archive move were preserved under `archive/move_cleanup_source_stub_20260312`
 - `donors/` has been removed from GitHub history and force-pushed out of the public repo.
 - `/donors/` is now explicitly ignored, so local donor references can remain on disk without being uploaded again.
 - Working tree still has untracked local probe logs, but donor reference content is now local-only.
 - Legacy Git-metadata backups from the donor/publish cleanup are now archived locally under:
-  - `X:\backup\valentin\AI-Lab\projects\esp32_sonar_bridge\archive\legacy_git_metadata_20260311\esp32_sonar_bridge_firmware_git_BACKUP_20260311`
-  - `X:\backup\valentin\AI-Lab\projects\esp32_sonar_bridge\archive\legacy_git_metadata_20260311\esp32_sonar_bridge_nested_git_BACKUP_20260311`
+  - `X:\backup\valentin\AI-Lab\projects\archive\esp32_sonar_bridge\archive\legacy_git_metadata_20260311\esp32_sonar_bridge_firmware_git_BACKUP_20260311`
+  - `X:\backup\valentin\AI-Lab\projects\archive\esp32_sonar_bridge\archive\legacy_git_metadata_20260311\esp32_sonar_bridge_nested_git_BACKUP_20260311`
 - Reliable local build mirror: `C:\Users\valen\esp32_sonar_build`
 - Active hardware target: classic ESP32 on `COM13`
-- Latest local prerelease package prepared under:
-  - `X:\backup\valentin\AI-Lab\projects\esp32_sonar_bridge\archive\releases\v0.1.0-beta2`
-- Latest public prerelease:
-  - `https://github.com/valentindanev/esp32_sonar_bridge/releases/tag/v0.1.0-beta2`
+- Latest local release package prepared under:
+  - `X:\backup\valentin\AI-Lab\projects\archive\esp32_sonar_bridge\archive\releases\v1.0.0`
+- Latest public release:
+  - `https://github.com/valentindanev/esp32_sonar_bridge/releases/tag/v1.0.0`
 - Flashing reminder: this board often needs manual download mode (`hold BOOT`, `tap RESET/EN`, keep holding `BOOT` for about `1-2s`)
 - Latest local step-1 build status:
   - `http_server.c` patched for HTTP stack usage reduction
@@ -221,7 +294,7 @@
   - they are primarily a MAVLink bridge that can join the sonar Wi-Fi as a station so the tablet can use one Wi-Fi network for both sonar and telemetry
   - this explains why the donor is widely used while still not solving the boat's required "Deeper depth to FC" use case by itself
 - A real `1.2.3` binary was obtained and tested:
-  - file: `X:\backup\valentin\AI-Lab\projects\esp32_sonar_bridge\archive\binary_references\mavesp-esp12e-1.2.3.bin`
+  - file: `X:\backup\valentin\AI-Lab\projects\archive\esp32_sonar_bridge\archive\binary_references\mavesp-esp12e-1.2.3.bin`
   - flashed successfully to a D1 mini on `COM4`
   - confirmed binary identity:
     - AP SSID: `Mavesp.1.2.3`
@@ -328,7 +401,7 @@
 - Reliable build path on this Windows machine:
   - `C:\Users\valen\esp32_sonar_build`
 - Share / mapped project path for source of truth:
-  - `X:\backup\valentin\AI-Lab\projects\esp32_sonar_bridge`
+  - `X:\backup\valentin\AI-Lab\projects\archive\esp32_sonar_bridge`
 - Building directly from UNC or mapped-share paths is unreliable because ESP-IDF frontend steps still resolve back to UNC paths.
 
 ## Latest Confirmed Runtime Behavior
@@ -396,9 +469,9 @@ The Deeper AP connection path is now working. The current remaining issue on the
 - The first logging build then exposed a stack overflow in the `danevi_sonar` task.
 - The source was patched again to increase the sonar task stack from `2048` to `4096`.
 - Files updated:
-  - `X:\backup\valentin\AI-Lab\projects\esp32_sonar_bridge\firmware\main\db_esp32_control.c`
-  - `X:\backup\valentin\AI-Lab\projects\esp32_sonar_bridge\firmware\main\db_timers.c`
-  - `X:\backup\valentin\AI-Lab\projects\esp32_sonar_bridge\firmware\main\danevi_sonar.c`
+  - `X:\backup\valentin\AI-Lab\projects\archive\esp32_sonar_bridge\firmware\main\db_esp32_control.c`
+  - `X:\backup\valentin\AI-Lab\projects\archive\esp32_sonar_bridge\firmware\main\db_timers.c`
+  - `X:\backup\valentin\AI-Lab\projects\archive\esp32_sonar_bridge\firmware\main\danevi_sonar.c`
   - mirrored in `C:\Users\valen\esp32_sonar_build\main\...`
 - Earlier in this session, `main.c` was also patched so the Deeper fallback path treats the target as an open AP.
 
@@ -421,9 +494,9 @@ The Deeper AP connection path is now working. The current remaining issue on the
 - In this latest run, no hardwired-sonar frame logs appeared.
 
 ## Source File Under Active Work
-- `X:\backup\valentin\AI-Lab\projects\esp32_sonar_bridge\firmware\main\db_esp32_control.c`
-- `X:\backup\valentin\AI-Lab\projects\esp32_sonar_bridge\firmware\main\db_timers.c`
-- `X:\backup\valentin\AI-Lab\projects\esp32_sonar_bridge\firmware\main\danevi_sonar.c`
+- `X:\backup\valentin\AI-Lab\projects\archive\esp32_sonar_bridge\firmware\main\db_esp32_control.c`
+- `X:\backup\valentin\AI-Lab\projects\archive\esp32_sonar_bridge\firmware\main\db_timers.c`
+- `X:\backup\valentin\AI-Lab\projects\archive\esp32_sonar_bridge\firmware\main\danevi_sonar.c`
 - Mirrored build copy:
   - `C:\Users\valen\esp32_sonar_build\main\...`
 
@@ -441,7 +514,7 @@ The Deeper AP connection path is now working. The current remaining issue on the
 - Host connected successfully to `DroneBridge for ESP32`.
 - ESP serial console was available again on `COM13`.
 - New combined capture log:
-  - `X:\backup\valentin\AI-Lab\projects\esp32_sonar_bridge\http_ping_probe_20260311_h_live_connected.txt`
+  - `X:\backup\valentin\AI-Lab\projects\archive\esp32_sonar_bridge\http_ping_probe_20260311_h_live_connected.txt`
 
 ### Verified Result
 - The AP stayed connected and stable during:
@@ -489,7 +562,7 @@ The Deeper AP connection path is now working. The current remaining issue on the
   - file size on disk: `22463` bytes
 - A full-body retest was run with serial active:
   - log file:
-    - `X:\backup\valentin\AI-Lab\projects\esp32_sonar_bridge\http_root_fullread_probe_20260311_a.txt`
+    - `X:\backup\valentin\AI-Lab\projects\archive\esp32_sonar_bridge\http_root_fullread_probe_20260311_a.txt`
 - In that full-body test:
   - client received HTTP `200`
   - client read `54016` bytes
@@ -518,7 +591,7 @@ The Deeper AP connection path is now working. The current remaining issue on the
 
 ### Post-flash verification
 - New repro log:
-  - `X:\backup\valentin\AI-Lab\projects\esp32_sonar_bridge\http_root_partialread_probe_20260311_c_after_patch_ap_visible.txt`
+  - `X:\backup\valentin\AI-Lab\projects\archive\esp32_sonar_bridge\http_root_partialread_probe_20260311_c_after_patch_ap_visible.txt`
 - Re-tested the exact early-disconnect case:
   - client connected to `DroneBridge for ESP32`
   - client requested `/`
@@ -549,7 +622,7 @@ The Deeper AP connection path is now working. The current remaining issue on the
     - `distance_mm = Data_H * 256 + Data_L`
   - debug output now prints the actual received frame length and bytes more clearly
 - Backup created first:
-  - `X:\backup\valentin\AI-Lab\projects\esp32_sonar_bridge\backups\firmware\main\danevi_sonar_BACKUP_20260311_manufacturer_uart4.c`
+  - `X:\backup\valentin\AI-Lab\projects\archive\esp32_sonar_bridge\backups\firmware\main\danevi_sonar_BACKUP_20260311_manufacturer_uart4.c`
 
 ### Build / flash
 - Build succeeded in:
@@ -559,8 +632,8 @@ The Deeper AP connection path is now working. The current remaining issue on the
 
 ### Verification result
 - New logs:
-  - `X:\backup\valentin\AI-Lab\projects\esp32_sonar_bridge\hardwired_spec_boot_probe_20260311_a.txt`
-  - `X:\backup\valentin\AI-Lab\projects\esp32_sonar_bridge\hardwired_spec_runtime_probe_20260311_b.txt`
+  - `X:\backup\valentin\AI-Lab\projects\archive\esp32_sonar_bridge\hardwired_spec_boot_probe_20260311_a.txt`
+  - `X:\backup\valentin\AI-Lab\projects\archive\esp32_sonar_bridge\hardwired_spec_runtime_probe_20260311_b.txt`
 - The previous `ERR misaligned frame len=4 ...` issue is gone.
 - The ESP now accepts and logs hardwired UART frames as valid:
   - `DANEVI_SONAR: Hardwired sonar frame len=4 bytes=FF 00 00 FF -> 0 mm`
@@ -572,3 +645,4 @@ The Deeper AP connection path is now working. The current remaining issue on the
 - The hardwired sonar path is now decoding the manufacturer frame format instead of rejecting valid packets.
 - In the latest no-water / shallow-air runtime capture, the sensor repeatedly reported `0 mm`, which is consistent with the valid frame `FF 00 00 FF`.
 - The earlier bucket captures showing frames like `FF 00 D5 D4` remain important evidence that, with the sensor in water, the parser should now be able to surface plausible depths around `209-214 mm`.
+

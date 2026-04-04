@@ -318,8 +318,16 @@
             </div>
             <div class="row" id="ss_hardwired_summary_div">
                 <div class="four columns">
-                    <label>Hardwired Depth</label>
+                    <label>Published Hardwired Depth</label>
                     <div id="ss_hardwired_depth" class="deeper-readout">Waiting for UART frame</div>
+                </div>
+                <div class="four columns">
+                    <label>Last Raw Hardwired Reading</label>
+                    <div id="ss_hardwired_raw" class="deeper-readout">No raw frame yet</div>
+                </div>
+                <div class="four columns">
+                    <label>Hardwired Filter Status</label>
+                    <div id="ss_hardwired_filter_status" class="deeper-readout">Waiting for first good reading</div>
                 </div>
             </div>
             <div class="row" id="ss_hardwired_debug_div">
@@ -376,11 +384,14 @@
         <div class="six columns">
             <button class="button-primary" onclick="save_settings()">Save Settings & Reboot</button>
         </div>
+        <div class="six columns">
+            <a class="button button-primary" href="/ota">Wireless Update & Recovery</a>
+        </div>
     </div>
 </div>
 <div class="container">
     <div id="esp_mac" style="margin-top: 1rem" class="row small_text"></div>
-    <div id="about" class="row">DroneBridge for ESP32 - waiting for a response from the ESP32
+    <div id="about" class="row">DanevBaitBoatBridge v0.1 - waiting for a response from the ESP32
     </div>
     <div style="margin-bottom: 2rem" class="row">&copy; Wolfgang Christl 2018 - Apache 2.0 License</div>
 </div>

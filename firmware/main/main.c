@@ -18,6 +18,7 @@
  */
 
 #include <driver/gpio.h>
+#include <esp_ota_ops.h>
 #include <esp_wifi_types.h>
 #include <lwip/apps/netbiosns.h>
 #include <nvs_flash.h>
@@ -79,6 +80,8 @@
 static const char *TAG = "DB_ESP32";
 static const uint32_t DB_DEEPER_BOOT_CONNECT_WINDOW_MS = 60000;
 static const size_t DB_PARAM_LOG_BUFFER_SIZE = 2048;
+static const char *DB_UPDATE_AP_ONCE_KEY = "upd_ap_once";
+static bool s_web_fs_available = false;
 
 static void db_refresh_ap_sta_list_if_available(void) {
   esp_err_t err = esp_wifi_ap_get_sta_list(&wifi_sta_list);
@@ -215,6 +218,78 @@ static void db_copy_cstr(char *dst, size_t dst_size, const char *src) {
   }
   strncpy(dst, src, dst_size - 1);
   dst[dst_size - 1] = '\0';
+}
+
+static bool db_consume_update_ap_mode_on_next_boot(void) {
+  nvs_handle_t my_handle;
+  uint8_t boot_ap_once = 0;
+  bool should_force_ap = false;
+
+  if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &my_handle) != ESP_OK) {
+    ESP_LOGW(TAG, "Failed to open NVS while checking update-mode boot flag");
+    return false;
+  }
+
+  esp_err_t err = nvs_get_u8(my_handle, DB_UPDATE_AP_ONCE_KEY, &boot_ap_once);
+  if (err == ESP_OK && boot_ap_once == 1) {
+    should_force_ap = true;
+    ESP_ERROR_CHECK_WITHOUT_ABORT(
+        nvs_erase_key(my_handle, DB_UPDATE_AP_ONCE_KEY));
+    ESP_ERROR_CHECK_WITHOUT_ABORT(nvs_commit(my_handle));
+  } else if (err != ESP_OK && err != ESP_ERR_NVS_NOT_FOUND) {
+    ESP_LOGW(TAG, "Failed to read update-mode boot flag (%s)",
+             esp_err_to_name(err));
+  }
+
+  nvs_close(my_handle);
+  return should_force_ap;
+}
+
+esp_err_t db_request_update_ap_mode_on_next_boot(void) {
+  nvs_handle_t my_handle;
+  ESP_ERROR_CHECK(nvs_open(NVS_NAMESPACE, NVS_READWRITE, &my_handle));
+  ESP_ERROR_CHECK(nvs_set_u8(my_handle, DB_UPDATE_AP_ONCE_KEY, 1));
+  ESP_ERROR_CHECK(nvs_commit(my_handle));
+  nvs_close(my_handle);
+  return ESP_OK;
+}
+
+bool db_is_web_fs_available(void) { return s_web_fs_available; }
+
+esp_err_t db_unmount_web_fs(void) {
+  if (!s_web_fs_available) {
+    return ESP_OK;
+  }
+
+#if CONFIG_WEB_DEPLOY_SF
+  esp_err_t err = esp_vfs_spiffs_unregister(DB_WEB_PARTITION_LABEL);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to unmount SPIFFS before web OTA (%s)",
+             esp_err_to_name(err));
+    return err;
+  }
+#endif
+
+  s_web_fs_available = false;
+  return ESP_OK;
+}
+
+static void db_mark_running_ota_image_valid_if_needed(void) {
+  const esp_partition_t *running = esp_ota_get_running_partition();
+  esp_ota_img_states_t ota_state;
+  esp_err_t err = esp_ota_get_state_partition(running, &ota_state);
+
+  if (err == ESP_OK && ota_state == ESP_OTA_IMG_PENDING_VERIFY) {
+    err = esp_ota_mark_app_valid_cancel_rollback();
+    if (err == ESP_OK) {
+      ESP_LOGI(TAG, "Confirmed pending OTA image as valid.");
+    } else {
+      ESP_LOGE(TAG, "Failed to confirm pending OTA image (%s)",
+               esp_err_to_name(err));
+    }
+  } else if (err != ESP_OK && err != ESP_ERR_NOT_SUPPORTED) {
+    ESP_LOGW(TAG, "Unable to query OTA image state (%s)", esp_err_to_name(err));
+  }
 }
 
 static void db_unregister_wifi_handlers(void) {
@@ -452,12 +527,13 @@ esp_err_t init_fs(void) {
 
 esp_err_t init_fs(void) {
   esp_vfs_spiffs_conf_t conf = {.base_path = CONFIG_WEB_MOUNT_POINT,
-                                .partition_label = NULL,
+                                .partition_label = DB_WEB_PARTITION_LABEL,
                                 .max_files = 5,
                                 .format_if_mount_failed = false};
   esp_err_t ret = esp_vfs_spiffs_register(&conf);
 
   if (ret != ESP_OK) {
+    s_web_fs_available = false;
     if (ret == ESP_FAIL) {
       ESP_LOGE(TAG, "Failed to mount or format filesystem");
     } else if (ret == ESP_ERR_NOT_FOUND) {
@@ -469,11 +545,12 @@ esp_err_t init_fs(void) {
   }
 
   size_t total = 0, used = 0;
-  ret = esp_spiffs_info(NULL, &total, &used);
+  ret = esp_spiffs_info(DB_WEB_PARTITION_LABEL, &total, &used);
   if (ret != ESP_OK) {
     ESP_LOGE(TAG, "Failed to get SPIFFS partition information (%s)",
              esp_err_to_name(ret));
   } else {
+    s_web_fs_available = true;
     ESP_LOGI(TAG,
              "Filesystem init finished! Partition size: total: %d bytes, used: "
              "%d bytes (%i%%)",
@@ -999,6 +1076,8 @@ void db_configure_antenna() {
 void app_main() {
   bool deeper_sta_connected = false;
   bool hardwired_sonar_selected = false;
+  bool force_update_ap_mode = false;
+  int boot_radio_mode = DB_WIFI_MODE_AP;
   s_deeper_sta_session_active = false;
 
   db_param_init_parameters();
@@ -1012,13 +1091,25 @@ void app_main() {
   }
   ESP_ERROR_CHECK(ret);
   db_read_settings_nvs();
+  force_update_ap_mode = db_consume_update_ap_mode_on_next_boot();
   DB_RADIO_MODE_DESIGNATED =
       DB_PARAM_RADIO_MODE; // must always match, mismatch only allowed when
                            // changed by user action and not rebooted, yet.
   db_configure_antenna();
   DB_ACTIVE_SONAR_SOURCE = DB_SONAR_SOURCE_NONE;
+  boot_radio_mode = DB_PARAM_RADIO_MODE;
 
-  switch (DB_PARAM_RADIO_MODE) {
+  if (force_update_ap_mode) {
+    ESP_LOGW(TAG, "One-time update AP mode requested. Skipping normal radio "
+                  "selection and booting a visible AP for maintenance.");
+    boot_radio_mode = DB_WIFI_MODE_AP;
+    db_init_wifi_apmode(DB_WIFI_MODE_AP);
+    hardwired_sonar_selected = DB_PARAM_HARDWIRED_EN;
+    DB_ACTIVE_SONAR_SOURCE = hardwired_sonar_selected
+                                 ? DB_SONAR_SOURCE_HARDWIRED
+                                 : DB_SONAR_SOURCE_NONE;
+  } else {
+  switch (boot_radio_mode) {
   case DB_WIFI_MODE_AP:
   case DB_WIFI_MODE_AP_LR:
     if (DB_PARAM_DEEPER_EN) {
@@ -1048,7 +1139,7 @@ void app_main() {
         db_copy_cstr(DB_PARAM_PASS, db_param_pass.value.db_param_str.max_len,
                      original_wifi_pass);
 
-        db_init_wifi_apmode(DB_PARAM_RADIO_MODE);
+        db_init_wifi_apmode(boot_radio_mode);
         hardwired_sonar_selected = true;
         DB_ACTIVE_SONAR_SOURCE = DB_SONAR_SOURCE_HARDWIRED;
         ESP_LOGI(TAG, "Deeper boot probe failed. Staying in AP mode and using "
@@ -1096,6 +1187,7 @@ void app_main() {
 #else
     DB_RADIO_MODE_DESIGNATED = DB_WIFI_MODE_AP;
     DB_PARAM_RADIO_MODE = DB_WIFI_MODE_AP;
+    boot_radio_mode = DB_WIFI_MODE_AP;
     ESP_LOGE(TAG, "Bluetooth is not enabled with this build. Please enable it "
                   "in menuconfig and re-compile. Switching to AP mode.");
     db_init_wifi_apmode(DB_WIFI_MODE_AP);
@@ -1110,6 +1202,7 @@ void app_main() {
     if (db_init_wifi_clientmode(0) < 0) {
       ESP_LOGE(TAG, "Failed to init Wifi Client Mode");
       ESP_LOGI(TAG, "Falling back to AP mode");
+      boot_radio_mode = DB_WIFI_MODE_AP;
       db_init_wifi_apmode(DB_WIFI_MODE_AP);
       hardwired_sonar_selected = DB_PARAM_HARDWIRED_EN;
       DB_ACTIVE_SONAR_SOURCE = hardwired_sonar_selected
@@ -1127,6 +1220,7 @@ void app_main() {
     }
     break;
   }
+  }
 
   if (hardwired_sonar_selected) {
     danevi_sonar_init(DB_PARAM_SONAR_TX_GPIO, DB_PARAM_SONAR_RX_GPIO);
@@ -1136,16 +1230,19 @@ void app_main() {
     ESP_LOGI(TAG, "No hardwired sonar source selected for this boot.");
   }
 
-  if (DB_PARAM_RADIO_MODE != DB_WIFI_MODE_ESPNOW_AIR &&
-      DB_PARAM_RADIO_MODE != DB_WIFI_MODE_ESPNOW_GND &&
-      DB_PARAM_RADIO_MODE != DB_WIFI_MODE_AP_LR) {
+  if (boot_radio_mode != DB_WIFI_MODE_ESPNOW_AIR &&
+      boot_radio_mode != DB_WIFI_MODE_ESPNOW_GND &&
+      boot_radio_mode != DB_WIFI_MODE_AP_LR) {
     // no need to start these services - won`t be available anyway - safe the
     // resources
     start_mdns_service();
     netbiosns_init();
     netbiosns_set_name("dronebridge");
   }
-  ESP_ERROR_CHECK(init_fs());
+  if (init_fs() != ESP_OK) {
+    ESP_LOGW(TAG, "Web filesystem is unavailable. Continuing with the embedded "
+                  "OTA recovery page only.");
+  }
   db_start_control_module();
   if (deeper_sta_connected) {
     deeper_udp_sonar_start();
@@ -1155,9 +1252,9 @@ void app_main() {
   db_timer_start_mavlink_radio_status();
   db_timer_start_mavlink_sonar();
 
-  if (DB_PARAM_RADIO_MODE != DB_WIFI_MODE_ESPNOW_AIR &&
-      DB_PARAM_RADIO_MODE != DB_WIFI_MODE_ESPNOW_GND &&
-      DB_PARAM_RADIO_MODE != DB_WIFI_MODE_AP_LR) {
+  if (boot_radio_mode != DB_WIFI_MODE_ESPNOW_AIR &&
+      boot_radio_mode != DB_WIFI_MODE_ESPNOW_GND &&
+      boot_radio_mode != DB_WIFI_MODE_AP_LR) {
     // no need to start these services - won`t be available anyway - safe the
     // resources
     ESP_ERROR_CHECK(start_rest_server(CONFIG_WEB_MOUNT_POINT));
@@ -1165,5 +1262,6 @@ void app_main() {
     // Disable legacy support for DroneBridge communication module - no use case
     // for DroneBridge for ESP32 communication_module();
   }
+  db_mark_running_ota_image_valid_if_needed();
   ESP_LOGI(TAG, "app_main finished initial setup");
 }

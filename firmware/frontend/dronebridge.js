@@ -147,6 +147,8 @@ function change_hardwired_visibility() {
 		summary_div.style.display = "none";
 		debug_div.style.display = "none";
 		document.getElementById("ss_hardwired_depth").innerHTML = "Hardwired sonar disabled";
+		document.getElementById("ss_hardwired_raw").innerHTML = "Hardwired sonar disabled";
+		document.getElementById("ss_hardwired_filter_status").innerHTML = "Hardwired sonar disabled";
 		document.getElementById("ss_hardwired_debug").value = "Hardwired sonar disabled.";
 	}
 }
@@ -265,7 +267,7 @@ function get_esp_chip_model_str(esp_model_index) {
 function get_system_info() {
 	get_json("api/system/info").then(json_data => {
 		console.log("Received settings: " + json_data)
-		document.getElementById("about").innerHTML = "DroneBridge for ESP32 v" + json_data["major_version"] +
+		document.getElementById("about").innerHTML = "DanevBaitBoatBridge v0.1 Forked from DroneBridge for ESP32 v" + json_data["major_version"] +
 			"." + json_data["minor_version"] + "." + json_data["patch_version"] + " (" + json_data["maturity_version"] + ")" +
 			" - esp-idf " + json_data["idf_version"] + " - " + get_esp_chip_model_str(json_data["esp_chip_model"])
 		document.getElementById("esp_mac").innerHTML = json_data["esp_mac"]
@@ -395,19 +397,70 @@ function get_stats() {
 function update_hardwired_readouts(json_data) {
 	if (!document.getElementById("ss_hardwired_en").checked && active_sonar_source !== 1) {
 		document.getElementById("ss_hardwired_depth").innerHTML = "Hardwired sonar disabled";
+		document.getElementById("ss_hardwired_raw").innerHTML = "Hardwired sonar disabled";
+		document.getElementById("ss_hardwired_filter_status").innerHTML = "Hardwired sonar disabled";
 		return;
 	}
 
 	let depth_mm = parseInt(json_data["hardwired_depth_mm"]);
 	let sample_age_ms = parseInt(json_data["hardwired_sample_age_ms"]);
+	let raw_depth_mm = parseInt(json_data["hardwired_raw_depth_mm"]);
+	let raw_sample_age_ms = parseInt(json_data["hardwired_raw_sample_age_ms"]);
+	let last_good_depth_mm = parseInt(json_data["hardwired_last_good_depth_mm"]);
+	let last_good_sample_age_ms = parseInt(json_data["hardwired_last_good_sample_age_ms"]);
+	let zero_run_active = parseInt(json_data["hardwired_zero_run_active"]) === 1;
+	let zero_run_age_ms = parseInt(json_data["hardwired_zero_run_age_ms"]);
+	let consecutive_zero_frames = parseInt(json_data["hardwired_consecutive_zero_frames"]);
+	let zero_filter_holding = parseInt(json_data["hardwired_zero_filter_holding"]) === 1;
 
 	if (!isNaN(depth_mm) && depth_mm >= 0) {
 		let ageSuffix = (!isNaN(sample_age_ms) && sample_age_ms >= 0) ? " (" + sample_age_ms + " ms ago)" : "";
 		document.getElementById("ss_hardwired_depth").innerHTML =
 			(depth_mm / 1000).toFixed(2) + " m" + ageSuffix;
 	} else {
-		document.getElementById("ss_hardwired_depth").innerHTML = "Waiting for UART frame";
+		document.getElementById("ss_hardwired_depth").innerHTML =
+			zero_run_active ? "Suppressed during zero run" : "Waiting for UART frame";
 	}
+
+	if (!isNaN(raw_depth_mm) && raw_depth_mm >= 0) {
+		let rawAgeSuffix = (!isNaN(raw_sample_age_ms) && raw_sample_age_ms >= 0) ? " (" + raw_sample_age_ms + " ms ago)" : "";
+		document.getElementById("ss_hardwired_raw").innerHTML =
+			(raw_depth_mm / 1000).toFixed(2) + " m" + rawAgeSuffix;
+	} else {
+		document.getElementById("ss_hardwired_raw").innerHTML = "No raw frame yet";
+	}
+
+	let lastGoodText = (!isNaN(last_good_depth_mm) && last_good_depth_mm >= 0)
+		? (last_good_depth_mm / 1000).toFixed(2) + " m"
+		: "none yet";
+	if (!isNaN(last_good_sample_age_ms) && last_good_sample_age_ms >= 0 &&
+		!isNaN(last_good_depth_mm) && last_good_depth_mm >= 0) {
+		lastGoodText += " (" + last_good_sample_age_ms + " ms ago)";
+	}
+
+	let filterStatus = "Waiting for first good reading";
+	if (zero_filter_holding) {
+		let holdAgeSuffix = (!isNaN(zero_run_age_ms) && zero_run_age_ms >= 0)
+			? " for " + zero_run_age_ms + " ms"
+			: "";
+		let zeroCountSuffix = (!isNaN(consecutive_zero_frames) && consecutive_zero_frames > 0)
+			? " after " + consecutive_zero_frames + " zero frame(s)"
+			: "";
+		filterStatus = "Holding last good " + lastGoodText + holdAgeSuffix + zeroCountSuffix;
+	} else if (zero_run_active) {
+		let suppressAgeSuffix = (!isNaN(zero_run_age_ms) && zero_run_age_ms >= 0)
+			? " (" + zero_run_age_ms + " ms)"
+			: "";
+		let suppressCountSuffix = (!isNaN(consecutive_zero_frames) && consecutive_zero_frames > 0)
+			? ", " + consecutive_zero_frames + " zero frame(s)"
+			: "";
+		filterStatus = "Suppressing zero run" + suppressAgeSuffix + suppressCountSuffix + ". Last good: " + lastGoodText;
+	} else if (!isNaN(depth_mm) && depth_mm >= 0) {
+		filterStatus = "Live reading";
+	} else if (!isNaN(raw_depth_mm) && raw_depth_mm === 0) {
+		filterStatus = "Zero frame seen before first good reading";
+	}
+	document.getElementById("ss_hardwired_filter_status").innerHTML = filterStatus;
 }
 
 function update_deeper_readouts(json_data) {

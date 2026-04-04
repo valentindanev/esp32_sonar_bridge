@@ -16,6 +16,7 @@
 #define BUF_SIZE 256
 #define DANEVI_SONAR_TASK_STACK_SIZE 4096
 #define DANEVI_DISTANCE_STALE_MS 3000
+#define DANEVI_ZERO_HOLD_GRACE_MS 600
 #define DANEVI_DEBUG_MAX_LINES 8
 #define DANEVI_DEBUG_LINE_MAX 160
 #define DANEVI_FRAME_SIZE 4
@@ -25,8 +26,16 @@
 
 static const char *TAG = "DANEVI_SONAR";
 
+// Last good non-zero hardwired depth that is allowed to reach MAVLink/UI.
 static int g_current_distance_mm = -1;
 static uint32_t g_distance_update_ms = 0;
+// Last raw hardwired frame value, including zeroes.
+static int g_raw_distance_mm = -1;
+static uint32_t g_raw_distance_update_ms = 0;
+// Zero-run state so brief splash/out-of-water events can hold the last good
+// depth briefly instead of collapsing immediately to 0 mm.
+static uint32_t g_consecutive_zero_frames = 0;
+static uint32_t g_zero_run_start_ms = 0;
 static SemaphoreHandle_t g_distance_mutex = NULL;
 static SemaphoreHandle_t g_debug_mutex = NULL;
 static char g_debug_lines[DANEVI_DEBUG_MAX_LINES][DANEVI_DEBUG_LINE_MAX];
@@ -39,6 +48,44 @@ static TickType_t g_last_no_response_log_tick = 0;
 
 static uint32_t danevi_now_ms(void) {
   return (uint32_t)(esp_timer_get_time() / 1000ULL);
+}
+
+static bool danevi_zero_run_is_active_locked(void) {
+  return g_consecutive_zero_frames > 0 && g_zero_run_start_ms != 0;
+}
+
+static bool danevi_get_filtered_distance_locked(uint32_t now,
+                                                int *out_distance_mm,
+                                                uint32_t *out_sample_age_ms,
+                                                bool *out_holding_last_good) {
+  if (g_current_distance_mm < 0 || g_distance_update_ms == 0) {
+    return false;
+  }
+
+  uint32_t last_good_age_ms = now - g_distance_update_ms;
+  if (last_good_age_ms > DANEVI_DISTANCE_STALE_MS) {
+    return false;
+  }
+
+  bool holding_last_good = false;
+  if (danevi_zero_run_is_active_locked()) {
+    uint32_t zero_run_age_ms = now - g_zero_run_start_ms;
+    if (zero_run_age_ms > DANEVI_ZERO_HOLD_GRACE_MS) {
+      return false;
+    }
+    holding_last_good = true;
+  }
+
+  if (out_distance_mm != NULL) {
+    *out_distance_mm = g_current_distance_mm;
+  }
+  if (out_sample_age_ms != NULL) {
+    *out_sample_age_ms = last_good_age_ms;
+  }
+  if (out_holding_last_good != NULL) {
+    *out_holding_last_good = holding_last_good;
+  }
+  return true;
 }
 
 static void danevi_debug_init(void) {
@@ -145,25 +192,40 @@ static void danevi_log_no_response(void) {
 
 void danevi_sonar_set_distance(int distance_mm) {
   if (g_distance_mutex != NULL) {
+    uint32_t now = danevi_now_ms();
     xSemaphoreTake(g_distance_mutex, portMAX_DELAY);
-    g_current_distance_mm = distance_mm;
-    g_distance_update_ms = danevi_now_ms();
+
+    g_raw_distance_mm = distance_mm;
+    g_raw_distance_update_ms = now;
+
+    if (distance_mm > 0) {
+      g_current_distance_mm = distance_mm;
+      g_distance_update_ms = now;
+      g_consecutive_zero_frames = 0;
+      g_zero_run_start_ms = 0;
+    } else if (distance_mm == 0) {
+      if (g_consecutive_zero_frames == 0) {
+        g_zero_run_start_ms = now;
+      }
+      g_consecutive_zero_frames++;
+    }
+
     xSemaphoreGive(g_distance_mutex);
   }
 }
 
 bool danevi_sonar_get_latest_distance(int *out_distance_mm) {
-  if (g_distance_mutex != NULL) {
-    xSemaphoreTake(g_distance_mutex, portMAX_DELAY);
-    int dist = g_current_distance_mm;
-    xSemaphoreGive(g_distance_mutex);
-
-    if (dist >= 0) {
-      *out_distance_mm = dist;
-      return true;
-    }
+  if (out_distance_mm == NULL || g_distance_mutex == NULL) {
+    return false;
   }
-  return false;
+
+  bool has_distance = false;
+  uint32_t now = danevi_now_ms();
+  xSemaphoreTake(g_distance_mutex, portMAX_DELAY);
+  has_distance = danevi_get_filtered_distance_locked(now, out_distance_mm, NULL,
+                                                     NULL);
+  xSemaphoreGive(g_distance_mutex);
+  return has_distance;
 }
 
 bool danevi_sonar_get_snapshot(danevi_sonar_snapshot_t *snapshot) {
@@ -173,6 +235,8 @@ bool danevi_sonar_get_snapshot(danevi_sonar_snapshot_t *snapshot) {
 
   memset(snapshot, 0, sizeof(*snapshot));
   snapshot->depth_mm = -1;
+  snapshot->raw_depth_mm = -1;
+  snapshot->last_good_depth_mm = -1;
 
   if (g_distance_mutex == NULL) {
     return false;
@@ -180,16 +244,34 @@ bool danevi_sonar_get_snapshot(danevi_sonar_snapshot_t *snapshot) {
 
   uint32_t now = danevi_now_ms();
   xSemaphoreTake(g_distance_mutex, portMAX_DELAY);
-  if (g_current_distance_mm >= 0) {
+
+  if (danevi_get_filtered_distance_locked(now, &snapshot->depth_mm,
+                                          &snapshot->sample_age_ms,
+                                          &snapshot->zero_filter_holding_last_good)) {
     snapshot->has_distance = true;
-    snapshot->depth_mm = g_current_distance_mm;
-    if (g_distance_update_ms != 0) {
-      snapshot->sample_age_ms = now - g_distance_update_ms;
-    }
+  }
+
+  if (g_raw_distance_mm >= 0 && g_raw_distance_update_ms != 0) {
+    snapshot->has_raw_distance = true;
+    snapshot->raw_depth_mm = g_raw_distance_mm;
+    snapshot->raw_sample_age_ms = now - g_raw_distance_update_ms;
+  }
+
+  if (g_current_distance_mm >= 0 && g_distance_update_ms != 0) {
+    snapshot->has_last_good_distance = true;
+    snapshot->last_good_depth_mm = g_current_distance_mm;
+    snapshot->last_good_sample_age_ms = now - g_distance_update_ms;
+  }
+
+  if (danevi_zero_run_is_active_locked()) {
+    snapshot->zero_run_active = true;
+    snapshot->zero_run_age_ms = now - g_zero_run_start_ms;
+    snapshot->consecutive_zero_frames = g_consecutive_zero_frames;
   }
   xSemaphoreGive(g_distance_mutex);
 
-  return snapshot->has_distance;
+  return snapshot->has_distance || snapshot->has_raw_distance ||
+         snapshot->has_last_good_distance;
 }
 
 void danevi_sonar_get_debug_log(char *dst, size_t dst_size) {
@@ -203,24 +285,72 @@ void danevi_sonar_get_debug_log(char *dst, size_t dst_size) {
     return;
   }
 
+  uint32_t now = danevi_now_ms();
   xSemaphoreTake(g_debug_mutex, portMAX_DELAY);
-  if (g_debug_count == 0) {
+  int filtered_distance_mm = -1;
+  uint32_t filtered_age_ms = 0;
+  bool holding_last_good = false;
+
+  if (g_distance_mutex != NULL) {
+    xSemaphoreTake(g_distance_mutex, portMAX_DELAY);
+    danevi_get_filtered_distance_locked(now, &filtered_distance_mm,
+                                        &filtered_age_ms,
+                                        &holding_last_good);
+
+    char raw_desc[48];
+    char last_good_desc[48];
+    const char *publish_state = "stale/no-data";
+    if (filtered_distance_mm >= 0) {
+      publish_state = holding_last_good ? "hold-last-good" : "live";
+    } else if (danevi_zero_run_is_active_locked()) {
+      publish_state = "suppressed-zero-run";
+    }
+
+    if (g_raw_distance_mm >= 0 && g_raw_distance_update_ms != 0) {
+      snprintf(raw_desc, sizeof(raw_desc), "%d mm (%lu ms ago)",
+               g_raw_distance_mm,
+               (unsigned long)(now - g_raw_distance_update_ms));
+    } else {
+      snprintf(raw_desc, sizeof(raw_desc), "n/a");
+    }
+
+    if (g_current_distance_mm >= 0 && g_distance_update_ms != 0) {
+      snprintf(last_good_desc, sizeof(last_good_desc), "%d mm (%lu ms ago)",
+               g_current_distance_mm,
+               (unsigned long)(now - g_distance_update_ms));
+    } else {
+      snprintf(last_good_desc, sizeof(last_good_desc), "n/a");
+    }
+
     snprintf(dst, dst_size,
-             "No hardwired sonar frames captured yet. This panel fills when "
-             "UART2 receives valid frames or frame errors.");
+             "Filter: publish=%s raw=%s last_good=%s\n"
+             "Zero run: active=%s count=%lu age=%lu ms grace=%d ms",
+             publish_state, raw_desc, last_good_desc,
+             danevi_zero_run_is_active_locked() ? "yes" : "no",
+             (unsigned long)g_consecutive_zero_frames,
+             (unsigned long)(danevi_zero_run_is_active_locked()
+                                 ? (now - g_zero_run_start_ms)
+                                 : 0),
+             DANEVI_ZERO_HOLD_GRACE_MS);
+    xSemaphoreGive(g_distance_mutex);
+  } else {
+    snprintf(dst, dst_size, "Hardwired debug buffer available, distance state unavailable.");
+  }
+
+  if (g_debug_count == 0) {
+    strncat(dst, "\nNo hardwired sonar frames captured yet. This panel fills when "
+                  "UART2 receives valid frames or frame errors.",
+            dst_size - strlen(dst) - 1);
     xSemaphoreGive(g_debug_mutex);
     return;
   }
 
-  dst[0] = '\0';
   size_t oldest_index =
       (g_debug_next + DANEVI_DEBUG_MAX_LINES - g_debug_count) %
       DANEVI_DEBUG_MAX_LINES;
   for (size_t i = 0; i < g_debug_count; i++) {
     size_t line_index = (oldest_index + i) % DANEVI_DEBUG_MAX_LINES;
-    if (dst[0] != '\0') {
-      strncat(dst, "\n", dst_size - strlen(dst) - 1);
-    }
+    strncat(dst, "\n", dst_size - strlen(dst) - 1);
     strncat(dst, g_debug_lines[line_index], dst_size - strlen(dst) - 1);
   }
   xSemaphoreGive(g_debug_mutex);

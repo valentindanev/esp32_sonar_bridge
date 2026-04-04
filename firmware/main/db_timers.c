@@ -28,15 +28,20 @@
 #include "freertos/timers.h"
 #include "globals.h"
 #include <esp_wifi.h>
+#include <string.h>
 
 
 #define TAG "DB_TIMERS"
 #define DB_MAVLINK_SONAR_TASK_STACK_SIZE 6144
 #define DB_MAVLINK_SONAR_TASK_PRIORITY 5
+#define DB_MAVLINK_DEEPER_TEMP_PERIOD_MS 1000
+#define DB_MAVLINK_DEEPER_TEMP_NAME "waterTemp"
 
 static TaskHandle_t s_sonar_publish_task_handle = NULL;
 static TimerHandle_t s_sonar_timer_handle = NULL;
 static TickType_t s_last_sonar_log_tick = 0;
+static TickType_t s_last_deeper_temp_publish_tick = 0;
+static TickType_t s_last_deeper_temp_log_tick = 0;
 static bool s_sonar_task_missing_logged = false;
 static uint8_t s_sonar_publish_buffer[296];
 static fmav_status_t s_sonar_mav_status = {0};
@@ -289,6 +294,45 @@ static void db_publish_active_sonar_distance(void) {
   }
 }
 
+static void db_publish_deeper_temperature_if_due(void) {
+  if (DB_PARAM_SERIAL_PROTO != DB_SERIAL_PROTOCOL_MAVLINK ||
+      DB_ACTIVE_SONAR_SOURCE != DB_SONAR_SOURCE_DEEPER) {
+    return;
+  }
+
+  TickType_t now_tick = xTaskGetTickCount();
+  if (s_last_deeper_temp_publish_tick != 0 &&
+      (now_tick - s_last_deeper_temp_publish_tick) <
+          pdMS_TO_TICKS(DB_MAVLINK_DEEPER_TEMP_PERIOD_MS)) {
+    return;
+  }
+
+  deeper_udp_snapshot_t snapshot = {0};
+  if (!deeper_udp_sonar_get_snapshot(&snapshot) || !snapshot.has_temperature) {
+    return;
+  }
+
+  fmav_named_value_float_t payload = {0};
+  payload.time_boot_ms = now_tick * portTICK_PERIOD_MS;
+  payload.value = ((float)snapshot.temperature_c_tenths) / 10.0f;
+  memcpy(payload.name, DB_MAVLINK_DEEPER_TEMP_NAME,
+         strlen(DB_MAVLINK_DEEPER_TEMP_NAME));
+
+  uint16_t len = fmav_msg_named_value_float_encode_to_frame_buf(
+      s_sonar_publish_buffer, db_get_mav_sys_id() == 0 ? 1 : db_get_mav_sys_id(),
+      191, &payload, &s_sonar_mav_status);
+
+  write_to_serial(s_sonar_publish_buffer, len);
+  db_send_to_all_radio_clients(s_sonar_publish_buffer, len);
+  s_last_deeper_temp_publish_tick = now_tick;
+
+  if ((now_tick - s_last_deeper_temp_log_tick) >= pdMS_TO_TICKS(5000)) {
+    ESP_LOGI(TAG, "Publishing Deeper water temperature NAMED_VALUE_FLOAT: %.1f C",
+             payload.value);
+    s_last_deeper_temp_log_tick = now_tick;
+  }
+}
+
 /**
  * Dedicated sonar publisher task. The timer only wakes this task so the work
  * no longer runs inside the FreeRTOS timer service stack.
@@ -299,6 +343,7 @@ static void db_mavlink_sonar_publish_task(void *arg) {
   while (1) {
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
     db_publish_active_sonar_distance();
+    db_publish_deeper_temperature_if_due();
   }
 }
 

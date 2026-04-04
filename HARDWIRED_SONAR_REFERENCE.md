@@ -1,6 +1,6 @@
 # Hardwired Sonar Reference
 
-Last updated: 11-03-2026
+Last updated: 15-03-2026
 
 This file collects the known reference data for the hardwired underwater ultrasonic sensor used by `esp32_sonar_bridge`.
 
@@ -37,6 +37,22 @@ Common accuracy rule shown in the listing:
 - if `S >= 200` then accuracy is `+- (1 + S * 1%)`
 - `S` = measured distance
 
+## Model-Suffix Clarification From Later Manual
+
+A later manufacturer manual snapshot adds an important naming clarification for
+the `GL041` family:
+
+| Model | Interface / Output Family | Practical meaning for this project |
+|---|---|---|
+| `GL041MT` | UART controlled output | This is the family relevant to the current ESP32 hardwired integration |
+| `GL041M4` | RS485 output | Not the active project target, but useful as contrast because the manual assigns continuous post-power-on Modbus behavior to the RS485 family |
+
+Important scope note:
+
+- This reference still focuses on the UART-controlled `MT` variants.
+- The `M4` notes are kept only where they help explain the Modbus behavior split
+  and avoid mixing UART assumptions with RS485 assumptions.
+
 ## Listing Remarks
 
 - The maximum detectable distance (`300 cm` / `600 cm`) is based on a large flat object.
@@ -44,6 +60,10 @@ Common accuracy rule shown in the listing:
 - Output response time is based on `115200 bps`.
 - Accuracy was estimated with the sensor working `30 cm` below a static water surface, at `25 C`, with no water flow.
 - The listing refers to a later `Section 6` for more detail, but that section has not been captured yet.
+- The later manual explicitly says the sensor works in water and does **not**
+  work in air.
+- The later manual also says the sensor automatically compensates for the
+  current water temperature while measuring.
 
 ## Current Wiring Clues
 
@@ -242,6 +262,16 @@ Interpretation:
 - This looks like a short boot-time configuration window for UART models.
 - It may matter later if we want to change sensor settings such as baud rate or other registers.
 - It does not change the normal measurement-mode UART frame described above.
+- A later manual snapshot makes the interface split clearer:
+  - RS485 `M4` variants are documented as supporting Modbus continuously after
+    power-on
+  - UART `MT` variants are still documented around trigger/frame mode, with
+    boot-time register/config examples such as the angle-grade read procedure
+- Practical interpretation:
+  - continuous post-power-on Modbus should currently be treated as an RS485
+    behavior
+  - short boot-time register access remains the better current interpretation
+    for the UART family we care about
 
 Communication parameters inside this short UART-model Modbus window:
 
@@ -392,6 +422,29 @@ Practical interpretation for the UART models:
 - Narrower angle grades appear to reduce the maximum practical detection distance for the reference target.
 - The default angle grade remains `0x02` unless changed through the boot-window Modbus procedure.
 
+## Functional Test Examples From Later Manual
+
+A later manufacturer manual snapshot includes a few concrete underwater test
+photos with example readings. These are not a full characterization, but they
+are useful as sanity-check examples of what the vendor considers plausible:
+
+- measuring to the water surface:
+  - example displayed distance: about `4.7 cm`
+- measuring a flat object under water:
+  - example displayed distance: about `14.9 cm`
+- measuring over a layer of sand:
+  - example displayed distance: about `5.1 cm`
+- measuring a submerged PVC tube:
+  - example displayed distance: about `18.3 cm`
+
+Practical interpretation:
+
+- the vendor manual clearly expects target shape and material to matter
+- soft, irregular, or narrow targets can behave very differently from a large
+  flat reflector
+- this supports treating the headline `600 cm` range as a best-case figure, not
+  a guaranteed bottom-tracking range in all real underwater conditions
+
 ## Arduino Donor Comparison
 
 The Arduino donor was reviewed against the collected UART reference:
@@ -478,6 +531,8 @@ Before the next hardwired-sonar flash/test, re-check `firmware/main/danevi_sonar
   - we have not yet proven whether the physical unit on the desk behaves like the vendor docs or like the older Arduino donor assumptions
 - Modbus-side details still partially open:
   - we have not yet verified whether these Modbus commands work exactly as documented on the physical UART unit on the desk
+  - the later manual now makes it more likely that continuous post-power-on
+    Modbus belongs to the RS485 `M4` family, not the UART `MT` family
 - Power/current draw still missing
 - Mounting/orientation details still incomplete
 
@@ -522,3 +577,12 @@ This file currently contains data ingested from:
 ## Source Batch 8
 
 - donor comparison against `donors/arduino_sonar.ino` completed on `11-03-2026`
+
+## Source Batch 9
+
+- later manufacturer manual snapshot reviewed on `15-03-2026`:
+  - source: `https://manuals.plus/ae/1005005250918774`
+  - added the `GL041MT` vs `GL041M4` suffix/interface clarification
+  - added the "works only in water, not air" note
+  - added the RS485-vs-UART Modbus behavior clarification
+  - added the small set of photographed functional-test reading examples
