@@ -90,6 +90,10 @@ textarea.debug-window {
     border-radius: 4px;
 }
 
+#sonar_log_status {
+    margin-bottom: 1.2rem;
+}
+
 .deeper-coordinates {
     font-size: inherit;
     line-height: inherit;

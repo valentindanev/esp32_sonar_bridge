@@ -19,6 +19,7 @@
 
 #include "db_timers.h"
 #include "danevi_sonar.h"
+#include "db_sonar_log.h"
 #include "deeper_udp_sonar.h"
 #include "db_mavlink_msgs.h"
 #include "db_parameters.h"
@@ -291,6 +292,14 @@ static void db_publish_active_sonar_distance(void) {
              use_deeper_sonar ? "Deeper" : "hardwired", distance_mm,
              payload.current_distance);
     s_last_sonar_log_tick = now;
+  }
+
+  if (!use_deeper_sonar) {
+    danevi_sonar_snapshot_t hardwired_snapshot = {0};
+    if (danevi_sonar_get_snapshot(&hardwired_snapshot)) {
+      db_sonar_log_maybe_log_hardwired_publish(
+          distance_mm, payload.current_distance, &hardwired_snapshot);
+    }
   }
 }
 

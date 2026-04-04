@@ -378,6 +378,28 @@
                     <textarea id="ss_deeper_debug" class="debug-window" readonly spellcheck="false">Waiting for Deeper traffic...</textarea>
                 </div>
             </div>
+            <div class="row">
+                <div class="twelve columns">
+                    <label for="sonar_persistent_log">Persistent Sonar Log</label>
+                    <div id="sonar_log_status" class="deeper-readout">Waiting for persistent sonar log status...</div>
+                </div>
+            </div>
+            <div class="row">
+                <div class="four columns">
+                    <button type="button" class="button-primary" onclick="refresh_sonar_log()">Read / Refresh Log</button>
+                </div>
+                <div class="four columns">
+                    <button type="button" class="button-primary" onclick="download_sonar_log()">Download Log</button>
+                </div>
+                <div class="four columns">
+                    <button type="button" class="button-primary" onclick="clear_sonar_log()">Clear Log</button>
+                </div>
+            </div>
+            <div class="row">
+                <div class="twelve columns">
+                    <textarea id="sonar_persistent_log" class="debug-window" readonly spellcheck="false">Waiting for persistent sonar log...</textarea>
+                </div>
+            </div>
         </div>
     </form>
     <div class="row">
@@ -391,7 +413,7 @@
 </div>
 <div class="container">
     <div id="esp_mac" style="margin-top: 1rem" class="row small_text"></div>
-    <div id="about" class="row">DanevBaitBoatBridge v0.1 - waiting for a response from the ESP32
+    <div id="about" class="row">DanevBaitBoatBridge v0.1 - waiting for a response from the ESP32<br><span class="small_text">Running firmware version: waiting for OTA info from the ESP32</span>
     </div>
     <div style="margin-bottom: 2rem" class="row">&copy; Wolfgang Christl 2018 - Apache 2.0 License</div>
 </div>
@@ -404,6 +426,7 @@
     // get stats every half a second
     setInterval(get_stats, 500)
     setInterval(update_conn_status, 500)
+    setInterval(get_sonar_log_status, 5000)
     setInterval(check_for_issues, 1000)
     setTimeout(change_msp_ltm_visibility, 500)
     setTimeout(change_ap_ip_visibility, 500)

@@ -1,8 +1,91 @@
 ﻿# Current Debugging Context - ESP32 Sonar Bridge
 
 ## Latest Session Update
-- Date: 12-03-2026
+- Date: 05-04-2026
 - This file is the compaction handoff for the current session. The older detailed notes below are still useful, but the bullets in this section are the fastest way to resume work.
+
+### OTA Migration + Wi-Fi Update Validation - 04/05-04-2026
+- The boat is no longer on the old single-app `2MB` layout.
+- A one-time wired migration flash on `COM13` moved the device to a real `4MB` OTA-ready partition map with:
+  - `otadata`
+  - `ota_0`
+  - `ota_1`
+  - `www`
+  - `logs`
+  - final `256K` unallocated reserve
+- The migration build, OTA recovery page, and rollback-capable dual-slot app flow were validated on hardware.
+- `/ota` is embedded in the app image and remains available even if the `www` partition is damaged.
+- Normal maintenance path is now:
+  - connect to `DroneBridge for ESP32`
+  - open `http://192.168.5.1/ota`
+  - upload `db_esp32.bin` for firmware
+  - upload `www.bin` for frontend changes
+- One-time AP maintenance mode is implemented:
+  - the `Reboot Into AP Update Mode` action sets an NVS flag
+  - next boot skips the Deeper probe and comes up directly in AP mode
+- Wi-Fi OTA proof-of-concept is complete:
+  - `www.bin` OTA successfully changed frontend branding and button styling
+  - `db_esp32.bin` OTA successfully switched the running app from `ota_0` to `ota_1`
+  - main frontend now shows the real running app version/slot from `/api/update/info`
+- Current app version in source is `1.0.1`
+- Last verified live OTA status:
+  - running partition `ota_1`
+  - next update target `ota_0`
+
+### Persistent Rolling Sonar Logs - 05-04-2026
+- A dedicated `256K` SPIFFS `logs` partition is now part of the live flashed layout at `0x380000`.
+- New backend logger files:
+  - `firmware/main/db_sonar_log.c`
+  - `firmware/main/db_sonar_log.h`
+- Log storage path:
+  - mount point `/logs`
+  - file `/logs/sonar.log`
+- New HTTP API:
+  - `GET /api/logs/status`
+  - `GET /api/logs/sonar`
+  - `GET /api/logs/sonar/download`
+  - `DELETE /api/logs/sonar`
+- New main-page frontend block:
+  - persistent log status readout
+  - `Read / Refresh Log`
+  - `Download Log`
+  - `Clear Log`
+- Current persistent log content includes:
+  - boot events
+  - hardwired frame issues / no-response cases
+  - hardwired zero-run start / clear transitions
+  - hardwired sampled frames
+  - hardwired FC-facing publish snapshots
+  - Deeper track samples with depth / temperature / GPS fields
+- Important live bug and fix:
+  - first logger implementation only persisted boot metadata plus later publish/state events
+  - this made the downloaded file look stuck at the boot line while the hardwired debug window still updated
+  - fix was to persist sampled hardwired frames directly from `danevi_sonar.c`
+  - fix was rebuilt and pushed successfully over Wi-Fi
+- Latest live verification:
+  - `/api/logs/status` reports the log partition mounted successfully
+  - downloaded log now grows continuously during hardwired traffic
+  - frontend spacing around the persistent log controls was also adjusted and pushed over `www.bin` OTA
+
+### Measured Log Retention - 05-04-2026
+- The live unit was measured in the current hardwired worst-case debug state:
+  - repeated `0 mm` frames
+  - roughly one persistent `hardwired_frame` line per second
+- Measured live numbers from the ESP:
+  - usable log file budget: `225489` bytes
+  - observed write rate: about `67.7 bytes/sec`
+  - observed average line length: about `69.9 bytes`
+  - observed line rate: about `0.97 lines/sec`
+- Practical retention estimate at that exact live rate:
+  - first trim from empty at about `55.5 minutes`
+  - rolling history once trimming starts: about `42-56 minutes`
+- Interpretation:
+  - current retention is acceptable for the present debug phase
+  - if longer history is needed later, the next optimization target is to log hardwired state changes/events plus a slow heartbeat instead of every sampled frame
+
+### README / Operator Notes Updated - 04/05-04-2026
+- `README.md` now documents the Wi-Fi OTA procedure, the current partition layout, and the dedicated persistent log capability.
+- The project README is now safe to use as the first stop when asked how to update the boat without opening it.
 
 ### Agreed Hardwired Zero-Filter Plan - 15-03-2026
 - User and agent agreed that hardwired sonar `0 mm` is not a useful FC depth value for this boat/mapping use case.
@@ -79,8 +162,14 @@
 - Source-of-truth project path: `X:\backup\valentin\AI-Lab\projects\archive\esp32_sonar_bridge`
 - Public repo: `https://github.com/valentindanev/esp32_sonar_bridge`
 - Project status is now archived locally under `projects/archive/esp32_sonar_bridge` and should be treated as a live, field-validated project rather than active development.
-- Current public/local HEAD includes the final Deeper/AP credential restore fix, the refreshed bench-validation notes, and the published `v1.0.0` release.
-- Current working tree should be clean apart from ignored local-only archive/build content.
+- Current public/local HEAD is expected to include:
+  - the `4MB` OTA migration
+  - `/ota` recovery + app/web Wi-Fi update flow
+  - frontend running-firmware version display
+  - persistent rolling sonar logs
+  - latest logger/source-path fixes and frontend polish
+- Current app version in source: `1.0.1`
+- Current working tree should be clean apart from ignored/local-only probe assets after the latest push.
 - Local cleanup note:
   - root-level backups and probe/build logs are being archived under `archive/`
   - tracked next-step note lives in `FINISH_TODO.md`
@@ -94,6 +183,10 @@
   - `X:\backup\valentin\AI-Lab\projects\archive\esp32_sonar_bridge\archive\legacy_git_metadata_20260311\esp32_sonar_bridge_nested_git_BACKUP_20260311`
 - Reliable local build mirror: `C:\Users\valen\esp32_sonar_build`
 - Active hardware target: classic ESP32 on `COM13`
+- Latest verified live app state:
+  - firmware `1.0.1`
+  - running partition `ota_1`
+  - next OTA target `ota_0`
 - Latest local release package prepared under:
   - `X:\backup\valentin\AI-Lab\projects\archive\esp32_sonar_bridge\archive\releases\v1.0.0`
 - Latest public release:

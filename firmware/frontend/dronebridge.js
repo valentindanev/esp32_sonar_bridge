@@ -10,6 +10,9 @@ let recv_ser_bytes = 0;		// Total bytes received from serial interface
 let serial_dec_mav_msgs = 0;	// Total MAVLink messages decoded from serial interface
 let set_telem_proto = null;		// Telemetry protocol received by the ESP32
 let active_sonar_source = 0;	// 0 none, 1 hardwired, 2 deeper
+let cached_system_info = null;
+let cached_runtime_info = null;
+let cached_sonar_log_status = null;
 
 function change_radio_dis_arm_visibility() {
 	// we only support this feature when MAVLink or LTM are set AND when a standard Wi-Fi mode or BLE is enabled
@@ -244,6 +247,19 @@ async function send_json(api_path, json_data = undefined) {
 	return await response.json();
 }
 
+async function get_text(api_path) {
+	let get_url = ROOT_URL + api_path;
+	const response = await fetch(get_url, {
+		method: 'GET'
+	});
+	if (!response.ok) {
+		conn_status = 0
+		const body = await response.text();
+		throw new Error(body || `An error has occured: ${response.status}`);
+	}
+	return await response.text();
+}
+
 function get_esp_chip_model_str(esp_model_index) {
 	switch (esp_model_index) {
 		default:
@@ -264,14 +280,126 @@ function get_esp_chip_model_str(esp_model_index) {
 	}
 }
 
+function render_about_text() {
+	let branding_line = "DanevBaitBoatBridge v0.1 - waiting for a response from the ESP32";
+	let runtime_line = "Running firmware version: waiting for OTA info from the ESP32";
+
+	if (cached_system_info !== null) {
+		branding_line = "DanevBaitBoatBridge v0.1 Forked from DroneBridge for ESP32 v" + cached_system_info["major_version"] +
+			"." + cached_system_info["minor_version"] + "." + cached_system_info["patch_version"] + " (" + cached_system_info["maturity_version"] + ")" +
+			" - esp-idf " + cached_system_info["idf_version"] + " - " + get_esp_chip_model_str(cached_system_info["esp_chip_model"]);
+	}
+
+	if (cached_runtime_info !== null) {
+		runtime_line = "Running firmware v" + cached_runtime_info["running_app_version"] +
+			" (" + cached_runtime_info["running_app_date"] + " " + cached_runtime_info["running_app_time"] + ")" +
+			" - " + cached_runtime_info["running_partition_label"];
+	}
+
+	document.getElementById("about").innerHTML = branding_line + "<br><span class=\"small_text\">" + runtime_line + "</span>";
+}
+
+function render_sonar_log_status() {
+	let status_div = document.getElementById("sonar_log_status");
+	if (status_div == null) {
+		return;
+	}
+
+	if (cached_sonar_log_status === null || !cached_sonar_log_status["mounted"]) {
+		status_div.innerHTML = "Persistent sonar log unavailable. This is expected until the logger build with the dedicated logs partition is flashed once by cable.";
+		return;
+	}
+
+	const logBytes = parseInt(cached_sonar_log_status["log_file_bytes"]);
+	const maxLogBytes = parseInt(cached_sonar_log_status["max_log_file_bytes"]);
+	const usedBytes = parseInt(cached_sonar_log_status["partition_used_bytes"]);
+	const totalBytes = parseInt(cached_sonar_log_status["partition_total_bytes"]);
+	const compactionCount = parseInt(cached_sonar_log_status["compaction_count"]);
+	const percent = maxLogBytes > 0 ? ((logBytes / maxLogBytes) * 100).toFixed(1) : "0.0";
+
+	status_div.innerHTML = "Persistent log file: " + logBytes + " / " + maxLogBytes + " bytes (" + percent +
+		"% of rolling budget)<br>Partition usage: " + usedBytes + " / " + totalBytes +
+		" bytes, compactions this boot: " + compactionCount;
+}
+
+function get_sonar_log_status() {
+	get_json("api/logs/status").then(json_data => {
+		cached_sonar_log_status = json_data;
+		render_sonar_log_status();
+	}).catch(error => {
+		document.getElementById("sonar_log_status").innerHTML = error.message;
+	});
+}
+
+async function refresh_sonar_log(quiet = false) {
+	try {
+		document.getElementById("sonar_persistent_log").value = "Loading persistent sonar log...";
+		const log_text = await get_text("api/logs/sonar");
+		document.getElementById("sonar_persistent_log").value = log_text;
+		get_sonar_log_status();
+		if (!quiet) {
+			show_toast("Persistent sonar log refreshed.");
+		}
+	} catch (error) {
+		document.getElementById("sonar_persistent_log").value = error.message;
+		if (!quiet) {
+			show_toast(error.message, "#7a0f19");
+		}
+	}
+}
+
+function download_sonar_log() {
+	window.location = ROOT_URL + "api/logs/sonar/download";
+}
+
+async function clear_sonar_log() {
+	if (confirm("Do you want to clear the persistent sonar log?\nThis removes the currently saved rolling history.") !== true) {
+		return;
+	}
+
+	const post_url = ROOT_URL + "api/logs/sonar";
+	const response = await fetch(post_url, {
+		method: 'DELETE',
+		headers: {
+			'Accept': 'application/json',
+			'Content-Type': 'application/json',
+			"charset": 'UTF-8'
+		},
+		body: null
+	});
+
+	if (!response.ok) {
+		const message = await response.text();
+		show_toast(message || `An error has occured: ${response.status}`, "#7a0f19");
+		return;
+	}
+
+	const json = await response.json();
+	document.getElementById("sonar_persistent_log").value = "Persistent sonar log cleared.";
+	show_toast(json["msg"]);
+	get_sonar_log_status();
+}
+
+function get_runtime_firmware_info() {
+	get_json("api/update/info").then(json_data => {
+		cached_runtime_info = json_data;
+		render_about_text();
+	}).catch(error => {
+		conn_status = 0
+		error.message;
+		return -1;
+	});
+	return 0;
+}
+
 function get_system_info() {
 	get_json("api/system/info").then(json_data => {
 		console.log("Received settings: " + json_data)
-		document.getElementById("about").innerHTML = "DanevBaitBoatBridge v0.1 Forked from DroneBridge for ESP32 v" + json_data["major_version"] +
-			"." + json_data["minor_version"] + "." + json_data["patch_version"] + " (" + json_data["maturity_version"] + ")" +
-			" - esp-idf " + json_data["idf_version"] + " - " + get_esp_chip_model_str(json_data["esp_chip_model"])
+		cached_system_info = json_data;
+		render_about_text();
 		document.getElementById("esp_mac").innerHTML = json_data["esp_mac"]
 		serial_via_JTAG = json_data["serial_via_JTAG"];
+		get_runtime_firmware_info();
 		// set external antenna option visible based on info if RF switch is available on the board
 		if (parseInt(json_data["has_rf_switch"]) === 1) {
 			document.getElementById("ant_use_ext_div").style.display = "block";
@@ -297,6 +425,8 @@ function update_conn_status() {
 		// connection status changed. Update settings and UI
 		get_system_info();
 		get_settings();
+		get_sonar_log_status();
+		refresh_sonar_log(true);
 		setTimeout(change_msp_ltm_visibility, 500);
 		setTimeout(change_ap_ip_visibility, 500);
 		setTimeout(change_uart_visibility, 500);
@@ -376,7 +506,7 @@ function get_stats() {
 		}
 
 		if ('deeper_debug' in json_data) {
-			document.getElementById("ss_deeper_debug").value = json_data["deeper_debug"];
+		document.getElementById("ss_deeper_debug").value = json_data["deeper_debug"];
 		}
 		if ('hardwired_debug' in json_data) {
 			document.getElementById("ss_hardwired_debug").value = json_data["hardwired_debug"];

@@ -22,6 +22,6 @@ add_custom_command (
         POST_BUILD
         COMMAND cmake -E remove_directory "${CMAKE_SOURCE_DIR}/frontend/build"
 )
-set(PROJECT_VER "1.0.0")
+set(PROJECT_VER "1.0.1")
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(db_esp32)

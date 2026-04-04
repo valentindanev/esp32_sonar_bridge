@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "db_sonar_log.h"
 #include "db_esp32_control.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -347,10 +348,18 @@ static void deeper_process_sentence(const char *sentence) {
     if (has_coordinates) {
       deeper_set_latest_coordinates(latitude_deg, longitude_deg);
     }
+    deeper_udp_snapshot_t snapshot = {0};
+    if (deeper_udp_sonar_get_snapshot(&snapshot)) {
+      db_sonar_log_maybe_log_deeper_track(&snapshot);
+    }
   }
 
   if (deeper_parse_rmc_sentence(sentence, &latitude_deg, &longitude_deg)) {
     deeper_set_latest_coordinates(latitude_deg, longitude_deg);
+    deeper_udp_snapshot_t snapshot = {0};
+    if (deeper_udp_sonar_get_snapshot(&snapshot)) {
+      db_sonar_log_maybe_log_deeper_track(&snapshot);
+    }
   }
 }
 

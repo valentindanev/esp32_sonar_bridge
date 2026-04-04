@@ -12,6 +12,7 @@ set(SRCS
         db_timers.c
         danevi_sonar.c
         deeper_udp_sonar.c
+        db_sonar_log.c
 )
 
 if(CONFIG_BT_ENABLED)

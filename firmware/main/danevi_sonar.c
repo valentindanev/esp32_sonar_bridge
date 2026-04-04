@@ -2,6 +2,7 @@
 
 #include "driver/gpio.h"
 #include "driver/uart.h"
+#include "db_sonar_log.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -151,6 +152,7 @@ static void danevi_log_valid_distance(const uint8_t *frame, int length,
   snprintf(debug_line, sizeof(debug_line), "[%lu ms] OK len=%d bytes=%s -> %d mm",
            (unsigned long)danevi_now_ms(), length, frame_bytes, distance_mm);
   danevi_store_debug_line(debug_line);
+  db_sonar_log_log_hardwired_frame(distance_mm, length, frame_bytes);
   g_last_logged_distance_mm = distance_mm;
   g_last_distance_log_tick = now;
 }
@@ -172,6 +174,10 @@ static void danevi_log_frame_issue(const char *reason, const uint8_t *frame,
            "[%lu ms] ERR %s len=%d bytes=%s",
            (unsigned long)danevi_now_ms(), reason, length, frame_bytes);
   danevi_store_debug_line(debug_line);
+  char persistent_detail[DANEVI_DEBUG_LINE_MAX];
+  snprintf(persistent_detail, sizeof(persistent_detail), "len=%d bytes=%s",
+           length, frame_bytes);
+  db_sonar_log_log_hardwired_issue(reason, persistent_detail);
   g_last_frame_issue_log_tick = now;
 }
 
@@ -187,6 +193,8 @@ static void danevi_log_no_response(void) {
   snprintf(debug_line, sizeof(debug_line), "[%lu ms] WARN %s",
            (unsigned long)danevi_now_ms(), line);
   danevi_store_debug_line(debug_line);
+  db_sonar_log_log_hardwired_issue("no_response",
+                                   "timeout_ms=100 uart_read=0");
   g_last_no_response_log_tick = now;
 }
 
@@ -199,13 +207,18 @@ void danevi_sonar_set_distance(int distance_mm) {
     g_raw_distance_update_ms = now;
 
     if (distance_mm > 0) {
+      bool zero_run_was_active = danevi_zero_run_is_active_locked();
       g_current_distance_mm = distance_mm;
       g_distance_update_ms = now;
       g_consecutive_zero_frames = 0;
       g_zero_run_start_ms = 0;
+      if (zero_run_was_active) {
+        db_sonar_log_log_hardwired_zero_run_clear(distance_mm);
+      }
     } else if (distance_mm == 0) {
       if (g_consecutive_zero_frames == 0) {
         g_zero_run_start_ms = now;
+        db_sonar_log_log_hardwired_zero_run_start();
       }
       g_consecutive_zero_frames++;
     }

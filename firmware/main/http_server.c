@@ -33,6 +33,7 @@
 #include "esp_wifi.h"
 #include "esp_vfs.h"
 #include "cJSON.h"
+#include "db_sonar_log.h"
 #include "danevi_sonar.h"
 #include "deeper_udp_sonar.h"
 #include "globals.h"
@@ -220,6 +221,54 @@ static esp_err_t set_content_type_from_file(httpd_req_t *req, const char *filepa
     return httpd_resp_set_type(req, type);
 }
 
+static esp_err_t db_http_send_file_with_type(httpd_req_t *req,
+                                             const char *filepath,
+                                             const char *content_type) {
+    rest_server_context_t *rest_context = (rest_server_context_t *)req->user_ctx;
+    if (filepath == NULL || rest_context == NULL) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "invalid file request");
+        return ESP_FAIL;
+    }
+
+    int fd = open(filepath, O_RDONLY, 0);
+    if (fd == -1) {
+        ESP_LOGE(TAG, "Failed to open file : %s", filepath);
+        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "file not found");
+        return ESP_FAIL;
+    }
+
+    if (content_type != NULL) {
+        httpd_resp_set_type(req, content_type);
+    } else {
+        set_content_type_from_file(req, filepath);
+    }
+
+    char *chunk = rest_context->scratch;
+    ssize_t read_bytes = 0;
+    do {
+        read_bytes = read(fd, chunk, SCRATCH_BUFSIZE);
+        if (read_bytes == -1) {
+            ESP_LOGE(TAG, "Failed to read file : %s", filepath);
+            close(fd);
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                                "failed to read file");
+            return ESP_FAIL;
+        } else if (read_bytes > 0) {
+            if (httpd_resp_send_chunk(req, chunk, read_bytes) != ESP_OK) {
+                close(fd);
+                ESP_LOGW(TAG, "Client disconnected while sending file: %s",
+                         filepath);
+                return ESP_OK;
+            }
+        }
+    } while (read_bytes > 0);
+
+    close(fd);
+    httpd_resp_send_chunk(req, NULL, 0);
+    return ESP_OK;
+}
+
 /**
  * Send HTTP response with the contents of the requested file
  */
@@ -243,38 +292,7 @@ static esp_err_t rest_common_get_handler(httpd_req_t *req) {
     } else {
         strlcat(filepath, req->uri, sizeof(filepath));
     }
-    int fd = open(filepath, O_RDONLY, 0);
-    if (fd == -1) {
-        ESP_LOGE(TAG, "Failed to open file : %s", filepath);
-        /* Respond with 500 Internal Server Error */
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to read existing file");
-        return ESP_FAIL;
-    }
-
-    set_content_type_from_file(req, filepath);
-
-    char *chunk = rest_context->scratch;
-    ssize_t read_bytes;
-    do {
-        /* Read file in chunks into the scratch buffer */
-        read_bytes = read(fd, chunk, SCRATCH_BUFSIZE);
-        if (read_bytes == -1) {
-            ESP_LOGE(TAG, "Failed to read file : %s", filepath);
-        } else if (read_bytes > 0) {
-            /* Send the buffer contents as HTTP response chunk */
-            if (httpd_resp_send_chunk(req, chunk, read_bytes) != ESP_OK) {
-                close(fd);
-                ESP_LOGW(TAG, "Client disconnected while sending file: %s", filepath);
-                return ESP_OK;
-            }
-        }
-    } while (read_bytes > 0);
-    /* Close file after sending complete */
-    close(fd);
-    ESP_LOGI(TAG, "File sending complete");
-    /* Respond with an empty chunk to signal HTTP response completion */
-    httpd_resp_send_chunk(req, NULL, 0);
-    return ESP_OK;
+    return db_http_send_file_with_type(req, filepath, NULL);
 }
 
 /**
@@ -869,6 +887,97 @@ static esp_err_t update_web_post_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
+static esp_err_t sonar_log_status_get_handler(httpd_req_t *req) {
+    httpd_resp_set_type(req, "application/json");
+
+    db_sonar_log_status_t status = {0};
+    db_sonar_log_get_status(&status);
+
+    cJSON *root = cJSON_CreateObject();
+    if (root == NULL) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "out of memory");
+        return ESP_FAIL;
+    }
+
+    cJSON_AddNumberToObject(root, "mounted", status.mounted ? 1 : 0);
+    cJSON_AddNumberToObject(root, "partition_total_bytes",
+                            status.partition_total_bytes);
+    cJSON_AddNumberToObject(root, "partition_used_bytes",
+                            status.partition_used_bytes);
+    cJSON_AddNumberToObject(root, "log_file_bytes", status.log_file_bytes);
+    cJSON_AddNumberToObject(root, "max_log_file_bytes",
+                            status.max_log_file_bytes);
+    cJSON_AddNumberToObject(root, "trim_to_bytes", status.trim_to_bytes);
+    cJSON_AddNumberToObject(root, "compaction_count",
+                            status.compaction_count);
+
+    const char *resp = cJSON_Print(root);
+    db_http_resp_sendstr_with_retry(req, resp);
+    free((void *)resp);
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+
+static esp_err_t sonar_log_get_handler(httpd_req_t *req) {
+    db_sonar_log_status_t status = {0};
+    db_sonar_log_get_status(&status);
+    if (!status.mounted) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "persistent sonar log unavailable");
+        return ESP_FAIL;
+    }
+
+    if (status.log_file_bytes == 0) {
+        httpd_resp_set_type(req, "text/plain");
+        return httpd_resp_send(req,
+                               "No persistent sonar log entries yet.\n",
+                               HTTPD_RESP_USE_STRLEN);
+    }
+
+    return db_http_send_file_with_type(req, DB_SONAR_LOG_FILE_PATH,
+                                       "text/plain");
+}
+
+static esp_err_t sonar_log_download_get_handler(httpd_req_t *req) {
+    db_sonar_log_status_t status = {0};
+    db_sonar_log_get_status(&status);
+    if (!status.mounted) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "persistent sonar log unavailable");
+        return ESP_FAIL;
+    }
+
+    httpd_resp_set_hdr(req, "Content-Disposition",
+                       "attachment; filename=\"sonar-log.txt\"");
+    if (status.log_file_bytes == 0) {
+        httpd_resp_set_type(req, "text/plain");
+        return httpd_resp_send(req,
+                               "No persistent sonar log entries yet.\n",
+                               HTTPD_RESP_USE_STRLEN);
+    }
+
+    return db_http_send_file_with_type(req, DB_SONAR_LOG_FILE_PATH,
+                                       "text/plain");
+}
+
+static esp_err_t sonar_log_delete_handler(httpd_req_t *req) {
+    esp_err_t err = db_sonar_log_clear();
+    if (err != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "failed to clear persistent sonar log");
+        return ESP_FAIL;
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    db_http_resp_sendstr_with_retry(req,
+                                    "{\n"
+                                    "  \"status\": \"success\",\n"
+                                    "  \"msg\": \"Persistent sonar log cleared.\"\n"
+                                    "}");
+    return ESP_OK;
+}
+
 esp_err_t start_rest_server(const char *base_path) {
     REST_CHECK(base_path, "wrong base path", err);
     rest_server_context_t *rest_context = calloc(1, sizeof(rest_server_context_t));
@@ -878,7 +987,7 @@ esp_err_t start_rest_server(const char *base_path) {
     httpd_handle_t server = NULL;
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.uri_match_fn = httpd_uri_match_wildcard;
-    config.max_uri_handlers = 16;
+    config.max_uri_handlers = 20;
     config.stack_size = DB_HTTP_SERVER_STACK_SIZE;
 
     ESP_LOGI(TAG, "Starting HTTP Server");
@@ -985,6 +1094,38 @@ esp_err_t start_rest_server(const char *base_path) {
             .user_ctx = rest_context
     };
     httpd_register_uri_handler(server, &update_boot_ap_once_post_uri);
+
+    httpd_uri_t sonar_log_status_get_uri = {
+            .uri = "/api/logs/status",
+            .method = HTTP_GET,
+            .handler = sonar_log_status_get_handler,
+            .user_ctx = rest_context
+    };
+    httpd_register_uri_handler(server, &sonar_log_status_get_uri);
+
+    httpd_uri_t sonar_log_get_uri = {
+            .uri = "/api/logs/sonar",
+            .method = HTTP_GET,
+            .handler = sonar_log_get_handler,
+            .user_ctx = rest_context
+    };
+    httpd_register_uri_handler(server, &sonar_log_get_uri);
+
+    httpd_uri_t sonar_log_download_get_uri = {
+            .uri = "/api/logs/sonar/download",
+            .method = HTTP_GET,
+            .handler = sonar_log_download_get_handler,
+            .user_ctx = rest_context
+    };
+    httpd_register_uri_handler(server, &sonar_log_download_get_uri);
+
+    httpd_uri_t sonar_log_delete_uri = {
+            .uri = "/api/logs/sonar",
+            .method = HTTP_DELETE,
+            .handler = sonar_log_delete_handler,
+            .user_ctx = rest_context
+    };
+    httpd_register_uri_handler(server, &sonar_log_delete_uri);
 
     /* URI handler for getting web server files */
     httpd_uri_t common_get_uri = {
