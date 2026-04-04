@@ -13,6 +13,31 @@ let active_sonar_source = 0;	// 0 none, 1 hardwired, 2 deeper
 let cached_system_info = null;
 let cached_runtime_info = null;
 let cached_sonar_log_status = null;
+const REQUEST_TIMEOUT_MS = 1000;
+
+function is_abort_like_error(error) {
+	if (!error) {
+		return false;
+	}
+	if (error.name === "AbortError") {
+		return true;
+	}
+	const message = (typeof error.message === "string") ? error.message.toLowerCase() : "";
+	return message.includes("abort");
+}
+
+function normalize_request_error(error, fallback_message = "Request timed out. Please try again.") {
+	if (error && error.isNormalizedTimeout === true) {
+		return error;
+	}
+	if (is_abort_like_error(error)) {
+		const timeout_error = new Error(fallback_message);
+		timeout_error.isNormalizedTimeout = true;
+		timeout_error.isSilentBackgroundError = true;
+		return timeout_error;
+	}
+	return error;
+}
 
 function change_radio_dis_arm_visibility() {
 	// we only support this feature when MAVLink or LTM are set AND when a standard Wi-Fi mode or BLE is enabled
@@ -203,23 +228,27 @@ function toJSONString(form) {
 async function get_json(api_path) {
 	let req_url = ROOT_URL + api_path;
 
-	const controller = new AbortController()
-	// Set a timeout limit for the request using `setTimeout`. If the body
-	// of this timeout is reached before the request is completed, it will
-	// be cancelled.
-
+	const controller = new AbortController();
 	const timeout = setTimeout(() => {
-		controller.abort()
-	}, 1000)
-	const response = await fetch(req_url, {
-		signal: controller.signal
-	});
-	if (!response.ok) {
-		const message = `An error has occured: ${response.status}`;
-		conn_status = 0
-		throw new Error(message);
+		controller.abort();
+	}, REQUEST_TIMEOUT_MS);
+
+	try {
+		const response = await fetch(req_url, {
+			signal: controller.signal
+		});
+		if (!response.ok) {
+			const message = `An error has occured: ${response.status}`;
+			conn_status = 0;
+			throw new Error(message);
+		}
+		return await response.json();
+	} catch (error) {
+		conn_status = 0;
+		throw normalize_request_error(error);
+	} finally {
+		clearTimeout(timeout);
 	}
-	return await response.json();
 }
 
 /**
@@ -249,15 +278,27 @@ async function send_json(api_path, json_data = undefined) {
 
 async function get_text(api_path) {
 	let get_url = ROOT_URL + api_path;
-	const response = await fetch(get_url, {
-		method: 'GET'
-	});
-	if (!response.ok) {
-		conn_status = 0
-		const body = await response.text();
-		throw new Error(body || `An error has occured: ${response.status}`);
+	const controller = new AbortController();
+	const timeout = setTimeout(() => {
+		controller.abort();
+	}, REQUEST_TIMEOUT_MS * 5);
+
+	try {
+		const response = await fetch(get_url, {
+			method: 'GET',
+			signal: controller.signal
+		});
+		if (!response.ok) {
+			conn_status = 0;
+			const body = await response.text();
+			throw new Error(body || `An error has occured: ${response.status}`);
+		}
+		return await response.text();
+	} catch (error) {
+		throw normalize_request_error(error, "Timed out while reading the persistent sonar log. Please try again.");
+	} finally {
+		clearTimeout(timeout);
 	}
-	return await response.text();
 }
 
 function get_esp_chip_model_str(esp_model_index) {
@@ -327,7 +368,8 @@ function get_sonar_log_status() {
 		cached_sonar_log_status = json_data;
 		render_sonar_log_status();
 	}).catch(error => {
-		document.getElementById("sonar_log_status").innerHTML = error.message;
+		const normalized_error = normalize_request_error(error);
+		document.getElementById("sonar_log_status").innerHTML = normalized_error.message;
 	});
 }
 
@@ -337,9 +379,6 @@ async function refresh_sonar_log(quiet = false) {
 		const log_text = await get_text("api/logs/sonar");
 		document.getElementById("sonar_persistent_log").value = log_text;
 		get_sonar_log_status();
-		if (!quiet) {
-			show_toast("Persistent sonar log refreshed.");
-		}
 	} catch (error) {
 		document.getElementById("sonar_persistent_log").value = error.message;
 		if (!quiet) {
@@ -426,7 +465,12 @@ function update_conn_status() {
 		get_system_info();
 		get_settings();
 		get_sonar_log_status();
-		refresh_sonar_log(true);
+		const sonar_log_elem = document.getElementById("sonar_persistent_log");
+		if (sonar_log_elem != null &&
+			(sonar_log_elem.value === "Waiting for persistent sonar log..." ||
+			 sonar_log_elem.value === "Loading persistent sonar log...")) {
+			sonar_log_elem.value = "Press Read / Refresh Log to load the persistent sonar log.";
+		}
 		setTimeout(change_msp_ltm_visibility, 500);
 		setTimeout(change_ap_ip_visibility, 500);
 		setTimeout(change_uart_visibility, 500);
@@ -658,9 +702,11 @@ function get_settings() {
 		set_telem_proto = document.getElementById("proto").value;
 		change_hardwired_visibility();
 	}).catch(error => {
-		conn_status = 0
-		error.message;
-		show_toast(error.message);
+		conn_status = 0;
+		const normalized_error = normalize_request_error(error);
+		if (normalized_error.isSilentBackgroundError !== true) {
+			show_toast(normalized_error.message);
+		}
 		return -1;
 	});
 	change_ap_ip_visibility();

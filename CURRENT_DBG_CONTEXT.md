@@ -83,6 +83,94 @@
   - current retention is acceptable for the present debug phase
   - if longer history is needed later, the next optimization target is to log hardwired state changes/events plus a slow heartbeat instead of every sampled frame
 
+### Deeper Stability Hotfix - 05-04-2026
+- After the persistent-log feature was added, Deeper-mode field testing showed unstable `192.168.10.2` behavior:
+  - alternating ping timeouts
+  - occasional `400-500 ms` replies
+  - evidence of repeated fresh low-uptime boot/debug lines while the ESP was already in Deeper STA mode
+- Working diagnosis:
+  - the ESP was likely rebooting or stalling during Deeper STA boots after the new persistent log startup path was introduced
+  - the actual Deeper STA join logic did **not** materially change between the last known-good commit and the logging commit
+- Hotfix applied in `firmware/main/main.c`:
+  - skip `db_sonar_log_init()` and the boot-log write when `deeper_sta_connected == true`
+  - leave the persistent log feature enabled for non-Deeper boots
+- Hotfix build was flashed over USB to **both** OTA slots on `COM13` so the active slot could not fall back to the older app:
+  - `0x20000` (`ota_0`)
+  - `0x1A0000` (`ota_1`)
+- Post-hotfix verification from the workstation on the Deeper subnet:
+  - repeated ping + HTTP checks stayed stable for about `24 seconds`
+  - no alternating ping loss during that observation window
+  - `/api/logs/status` reported `mounted = 0` in Deeper mode as intended by the hotfix
+- Remaining follow-up after the stability fix:
+  - Deeper data itself was still not arriving
+  - live debug stayed at:
+    - `Starting Deeper UDP/NMEA task`
+    - `Bound local UDP port 10110`
+    - `TX $DEEP230,1*38`
+  - no RX NMEA lines were seen from the ESP
+  - a direct workstation-side UDP probe from `192.168.10.3` to `192.168.10.1:10110` also returned no NMEA during the test window
+- Practical interpretation:
+  - the **stability / reboot-loop** problem and the **missing Deeper payload** problem appear to be separate issues
+  - the hotfix addresses the first one only
+
+### Deeper Persistent Logging Reintroduced Via Snapshot Path - 05-04-2026
+- User then reported that Deeper was receiving again but the persistent log still did not show Deeper samples.
+- Safer follow-up change applied in `firmware/main/deeper_udp_sonar.c`:
+  - stop trying to log Deeper track samples directly from the early sentence-processing path
+  - instead, trigger persistent Deeper logging from `deeper_udp_sonar_get_snapshot()`, which is the same snapshot path used by the frontend and `/api/system/stats`
+  - add a lazy logger init helper so Deeper-mode boots do **not** initialize the persistent log immediately at startup, but can enable it later once real snapshot data exists
+  - lazy init is rate-limited to avoid rapid repeated mount/init attempts
+- Build / flash state:
+  - patched firmware was rebuilt successfully in `C:\Users\valen\esp32_sonar_build`
+  - patched app was flashed over USB to **both** OTA slots on `COM13`
+- Live verification from the Deeper subnet after the patch:
+  - `192.168.10.2` stayed stable again
+  - `/api/system/stats` showed live Deeper RX sentences and values:
+    - `active_sonar_source = 2`
+    - `deeper_depth_mm = 0`
+    - `deeper_temp_c_tenths` updating around `294-298`
+  - `/api/logs/status` now reports:
+    - `mounted = 1`
+    - log file growing normally again
+  - `/api/logs/sonar` now contains real Deeper track entries near the bottom, for example:
+    - `event=track source=deeper depth_mm=0 fc_cm=0 temp_c=29.8 gps_fix=0 sats=0 ...`
+- Practical interpretation:
+  - boot-time persistent logging in Deeper mode remains disabled as a stability hotfix
+  - persistent Deeper logging is now restored later through the shared snapshot path
+  - this is currently the safest known combination:
+    - stable Deeper STA behavior
+    - live frontend Deeper stats
+    - persistent downloadable Deeper track logging
+
+### Deeper Bench / Charger Behavior Clarified - 05-04-2026
+- During follow-up testing, Deeper traffic returned while the unit was on the desk / charger.
+- Live values in this condition were consistent with:
+  - `SDDBT` depth staying at `0.00`
+  - GPS fix invalid / no coordinates
+  - water temperature still updating
+- User confirmed this matches the Deeper's own out-of-water / charger behavior because the unit uses a water-detection sensor and does not behave like a normal in-water sonar on the desk.
+- Practical interpretation:
+  - once the Deeper link is stable and NMEA is flowing again, `0 m` depth plus no-fix GPS at the bench is **not** by itself evidence of a firmware regression
+  - lake / in-water validation is still required for meaningful depth behavior
+
+### Frontend Follow-Up For Deeper Mode - 05-04-2026
+- After the firmware-level Deeper stability fix, the web UI still showed noisy timeout/abort popups during background polling and reconnects.
+- Follow-up changes were applied in `firmware/frontend/dronebridge.js` and pushed over `www.bin` OTA:
+  - add request timeout normalization for fetch aborts/timeouts
+  - suppress harmless background timeout toasts from the periodic settings poll
+  - stop auto-loading the full persistent sonar log on reconnect
+  - keep automatic refresh only for the compact log status block
+  - remove the `Persistent sonar log refreshed.` success toast
+- Current intended UI behavior:
+  - the persistent log **status** continues to refresh automatically
+  - the full persistent log textarea is now **manual** and should show:
+    - `Press Read / Refresh Log to load the persistent sonar log.`
+  - user clicks `Read / Refresh Log` when they actually want the full rolling log body
+- Practical interpretation:
+  - this frontend change is primarily a load/noise reduction step for Deeper testing
+  - it does **not** replace the firmware-level root-cause stability hotfix in `main.c`
+  - it makes the live page calmer while preserving real manual-action errors
+
 ### README / Operator Notes Updated - 04/05-04-2026
 - `README.md` now documents the Wi-Fi OTA procedure, the current partition layout, and the dedicated persistent log capability.
 - The project README is now safe to use as the first stop when asked how to update the boat without opening it.

@@ -1244,13 +1244,23 @@ void app_main() {
     ESP_LOGW(TAG, "Web filesystem is unavailable. Continuing with the embedded "
                   "OTA recovery page only.");
   }
-  if (db_sonar_log_init() != ESP_OK) {
-    ESP_LOGW(TAG, "Persistent sonar log filesystem is unavailable. Continuing "
-                  "without downloadable rolling logs.");
+  // Temporary stability hotfix:
+  // keep the persistent log path disabled while the ESP is booted into the
+  // Deeper STA session, so we can separate Deeper-mode regressions from the
+  // newer flash-backed logging feature.
+  bool enable_persistent_sonar_log = !deeper_sta_connected;
+  if (enable_persistent_sonar_log) {
+    if (db_sonar_log_init() != ESP_OK) {
+      ESP_LOGW(TAG, "Persistent sonar log filesystem is unavailable. "
+                    "Continuing without downloadable rolling logs.");
+    }
+    db_sonar_log_log_boot(DB_ACTIVE_SONAR_SOURCE, boot_radio_mode,
+                          deeper_sta_connected, force_update_ap_mode,
+                          db_is_web_fs_available());
+  } else {
+    ESP_LOGW(TAG, "Persistent sonar log temporarily disabled for this Deeper "
+                  "STA boot while the stability hotfix is active.");
   }
-  db_sonar_log_log_boot(DB_ACTIVE_SONAR_SOURCE, boot_radio_mode,
-                        deeper_sta_connected, force_update_ap_mode,
-                        db_is_web_fs_available());
   db_start_control_module();
   if (deeper_sta_connected) {
     deeper_udp_sonar_start();

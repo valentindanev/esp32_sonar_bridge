@@ -39,6 +39,7 @@ static double g_deeper_latitude_deg = 0.0;
 static double g_deeper_longitude_deg = 0.0;
 static uint32_t g_deeper_coordinates_update_ms = 0;
 static bool g_deeper_task_started = false;
+static uint32_t g_deeper_log_init_attempt_ms = 0;
 
 static uint32_t deeper_now_ms(void) {
   return (uint32_t)(esp_timer_get_time() / 1000ULL);
@@ -110,6 +111,31 @@ static void deeper_set_latest_coordinates(double latitude_deg,
   g_deeper_longitude_deg = longitude_deg;
   g_deeper_coordinates_update_ms = deeper_now_ms();
   xSemaphoreGive(g_deeper_state_mutex);
+}
+
+static void deeper_try_enable_persistent_log(
+    const deeper_udp_snapshot_t *snapshot) {
+  if (snapshot == NULL) {
+    return;
+  }
+  (void)snapshot;
+
+  if (db_sonar_log_is_available()) {
+    return;
+  }
+
+  uint32_t now = deeper_now_ms();
+  if (g_deeper_log_init_attempt_ms != 0 &&
+      (now - g_deeper_log_init_attempt_ms) < 5000) {
+    return;
+  }
+
+  g_deeper_log_init_attempt_ms = now;
+  esp_err_t err = db_sonar_log_init();
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "Deferred Deeper sonar log init failed (%s)",
+             esp_err_to_name(err));
+  }
 }
 
 static bool deeper_sentence_type_is(const char *sentence, const char *type) {
@@ -348,18 +374,10 @@ static void deeper_process_sentence(const char *sentence) {
     if (has_coordinates) {
       deeper_set_latest_coordinates(latitude_deg, longitude_deg);
     }
-    deeper_udp_snapshot_t snapshot = {0};
-    if (deeper_udp_sonar_get_snapshot(&snapshot)) {
-      db_sonar_log_maybe_log_deeper_track(&snapshot);
-    }
   }
 
   if (deeper_parse_rmc_sentence(sentence, &latitude_deg, &longitude_deg)) {
     deeper_set_latest_coordinates(latitude_deg, longitude_deg);
-    deeper_udp_snapshot_t snapshot = {0};
-    if (deeper_udp_sonar_get_snapshot(&snapshot)) {
-      db_sonar_log_maybe_log_deeper_track(&snapshot);
-    }
   }
 }
 
@@ -576,6 +594,12 @@ bool deeper_udp_sonar_get_snapshot(deeper_udp_snapshot_t *snapshot) {
     snapshot->newest_sample_age_ms = now - newest_update_ms;
   }
 
-  return snapshot->has_depth || snapshot->has_temperature ||
-         snapshot->has_satellites || snapshot->has_coordinates;
+  bool has_snapshot = snapshot->has_depth || snapshot->has_temperature ||
+                      snapshot->has_satellites || snapshot->has_coordinates;
+  if (has_snapshot) {
+    deeper_try_enable_persistent_log(snapshot);
+    db_sonar_log_maybe_log_deeper_track(snapshot);
+  }
+
+  return has_snapshot;
 }
